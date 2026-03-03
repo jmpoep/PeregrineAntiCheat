@@ -292,7 +292,7 @@ def check_process_modules(pid, max_bytes=8 * 1024 * 1024):
             info = MODULEINFO()
             if not psapi.GetModuleInformation(proc, hmod, ctypes.byref(info), ctypes.sizeof(info)):
                 results.append(
-                    {"path": None, "base": None, "size": None, "matched": False, "error": "GetModuleInformation failed"}
+                    {"path": None, "base": None, "size": None, "matched": None, "error": "GetModuleInformation failed"}
                 )
                 continue
 
@@ -307,7 +307,7 @@ def check_process_modules(pid, max_bytes=8 * 1024 * 1024):
                         file_bytes = f.read()
                 except Exception as exc:  # noqa: BLE001
                     entry["error"] = f"disk read failed: {exc}"
-                    entry["matched"] = False
+                    entry["matched"] = None
                     results.append(entry)
                     continue
                 text_info = _parse_text_section(file_bytes)
