@@ -129,7 +129,6 @@ def checkThread(obj, ui):
         # Get start address from kernel
         start_addr_str = obj.get("start_address")
         if not start_addr_str:
-            ui.append_log(f"[Thread Check] No start_address in event: {obj}")
             return
 
         # Parse the start address (format: "0x...")
@@ -139,12 +138,10 @@ def checkThread(obj, ui):
             else:
                 start_addr = int(start_addr_str)
         except (ValueError, TypeError):
-            ui.append_log(f"[Thread Check] Failed to parse start_address: {start_addr_str}")
             return
 
         pid = obj.get("pid", "N/A")
         if pid == "N/A":
-            ui.append_log("[Thread Check] No pid in thread event")
             return
 
         # Open process and check which module contains the start address
@@ -159,7 +156,7 @@ def checkThread(obj, ui):
             if module_path:
                 ui.append_log(f"[Thread OK] Start=0x{start_addr:X} Module={module_path}")
             else:
-                ui.append_log(f"[SUSPICIOUS!] Thread start 0x{start_addr:X} NOT in any known module! PID={pid}")
+                ui.append_log(f"[SUSPICIOUS THREAD] Start=0x{start_addr:X} NOT in any known module! PID={pid}")
         finally:
             kernel32.CloseHandle(proc)
 
@@ -228,18 +225,12 @@ def checkAllThreads(pid, ui):
                                     # Find which module this RIP belongs to
                                     module_path, base_addr = get_module_for_address(proc, rip, pid)
 
-                                    if module_path:
-                                        ui.append_log(f"[Thread {tid}] RIP=0x{rip:X} -> {module_path}")
-                                    else:
+                                    if not module_path:
                                         suspicious_count += 1
-                                        ui.append_log(f"[SUSPICIOUS! Thread {tid}] RIP=0x{rip:X} NOT in any known module!")
-                                else:
-                                    ui.append_log(f"[Thread {tid}] GetThreadContext failed (Error: {ctypes.get_last_error()})")
+                                        ui.append_log(f"[SUSPICIOUS THREAD {tid}] RIP=0x{rip:X} NOT in any known module!")
 
                             finally:
                                 kernel32.CloseHandle(thread_handle)
-                        else:
-                            ui.append_log(f"[Thread {tid}] OpenThread failed (Error: {ctypes.get_last_error()})")
 
                     # Get next thread
                     if not kernel32.Thread32Next(snapshot, ctypes.byref(thread_entry)):

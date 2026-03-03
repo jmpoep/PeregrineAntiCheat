@@ -76,19 +76,14 @@ def find_dll_paths():
 
     if dll_x64.exists():
         paths['x64'] = str(dll_x64).encode('ascii')
-        print(f"Found x64 DLL at: {dll_x64}")
     elif dll_generic.exists():
         paths['x64'] = str(dll_generic).encode('ascii')
-        print(f"Found DLL (assuming x64) at: {dll_generic}")
     else:
-        print(f"WARNING: x64 DLL not found")
         paths['x64'] = None
 
     if dll_x86.exists():
         paths['x86'] = str(dll_x86).encode('ascii')
-        print(f"Found x86 DLL at: {dll_x86}")
     else:
-        print(f"WARNING: x86 DLL not found")
         paths['x86'] = None
 
     return paths
@@ -248,14 +243,12 @@ class PeregrineGUI:
         pid = self._parse_pid_input()
         if pid is None:
             return
-        self.append_log(f"Sending PPL command for PID {pid}...")
         payload = bytes([4]) + self._pack_handle(pid)
-        self.append_log(f"Payload: {payload.hex()}")
         res = device_io_control(self.handle, IOCTL_PEREGRINE_SEND_FROM_USER, payload)
         if res is None:
-            self.append_log(f"IOCTL returned None - set PPL failed for PID {pid}")
+            self.append_log(f"[PPL] Failed to set PPL for PID {pid}")
         else:
-            self.append_log(f"IOCTL succeeded - set PID {pid} to PPL (check DebugView for kernel confirmation)")
+            self.append_log(f"[PPL] Set PID {pid} to PPL")
 
     def on_check_modules(self):
         pid = self._parse_pid_input(require_connection=False)
@@ -425,21 +418,17 @@ class PeregrineGUI:
                 s_fixed = s.replace("\\", "\\\\")
                 try:
                     obj = json.loads(s_fixed)
-                    if obj.get("event"):
-                        #self.append_log(f"[from kernel] event={obj['event']} raw={data!r}")
-                        if obj['event'] == "thread_create":
-                            threading.Thread(target=checkThread, args=(obj, self), daemon=True).start()
-
-                        elif obj['event'] == "process_create":
-                            threading.Thread(target=self.handle_process_create, args=(obj,), daemon=True).start()
-
-                        elif obj["event"] == "image_load":
-                            self.append_log(f"[from kernel] event={obj['event']} raw={data!r}")
-
-                    else:
-                        self.append_log(f"[from kernel] {data!r}")
+                    event = obj.get("event")
+                    if event == "thread_create":
+                        threading.Thread(target=checkThread, args=(obj, self), daemon=True).start()
+                    elif event == "process_create":
+                        threading.Thread(target=self.handle_process_create, args=(obj,), daemon=True).start()
+                    elif event == "image_load":
+                        name = obj.get("image_name") or obj.get("name") or "?"
+                        pid = obj.get("pid", "?")
+                        self.append_log(f"[Image Load] PID={pid} {name}")
                 except Exception as exc:
-                    self.append_log(f"decode error: {exc} raw={data!r}")
+                    self.append_log(f"[Kernel Parse Error] {exc}")
 
     def on_close(self):
         self.stop_event.set()

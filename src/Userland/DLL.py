@@ -116,21 +116,15 @@ def InjectDLL(target_pid: int, dll_paths, log_callback=None):
         if isinstance(dll_paths, dict):
             is_32bit = _is_process_32bit(target_pid)
             if is_32bit is None:
-                # if log_callback:
-                #     log_callback(f"[DLL Inject] Cannot determine architecture for PID={target_pid}, skipping")
                 return None
 
             if is_32bit:
                 filename_dll = dll_paths.get('x86')
                 if not filename_dll:
-                    # if log_callback:
-                    #     log_callback(f"[DLL Inject] No x86 DLL available for 32-bit PID={target_pid}")
                     return None
             else:
                 filename_dll = dll_paths.get('x64')
                 if not filename_dll:
-                    # if log_callback:
-                    #     log_callback(f"[DLL Inject] No x64 DLL available for 64-bit PID={target_pid}")
                     return None
         else:
             # Backward compatibility: dll_paths is actually a bytes object
@@ -178,21 +172,17 @@ def InjectDLL(target_pid: int, dll_paths, log_callback=None):
 
             # Check if LoadLibraryA succeeded (non-zero HMODULE)
             dll_name = filename_dll.rstrip(b"\x00").decode('utf-8', errors='ignore')
-            # if exit_code.value == 0:
-            #     if log_callback:
-            #         log_callback(f"[DLL Inject] LoadLibraryA returned NULL for {dll_name} in PID={target_pid} - DLL not found or failed to load!")
-            # else:
-            #     if log_callback:
-            #         log_callback(f"[DLL Inject] Successfully injected {dll_name} into PID={target_pid} (HMODULE=0x{exit_code.value:X})")
+            if exit_code.value == 0:
+                if log_callback:
+                    log_callback(f"[DLL Inject FAIL] LoadLibraryA returned NULL for PID={target_pid}")
+            else:
+                if log_callback:
+                    log_callback(f"[DLL Inject] PID={target_pid} OK (HMODULE=0x{exit_code.value:X})")
 
             return exit_code.value
         finally:
             kernel32.CloseHandle(h_proc)
     except Exception as e:
-        # if log_callback:
-        #     dll_name = filename_dll.rstrip(b"\x00").decode('utf-8', errors='ignore') if isinstance(filename_dll, bytes) else str(filename_dll)
-        #     log_callback(f"[DLL Inject] Failed to inject {dll_name} into PID={target_pid}: {e}")
-        # else:
-        #     # Re-raise if no callback provided (backward compatibility)
-        #     raise
-        pass
+        if log_callback:
+            log_callback(f"[DLL Inject FAIL] PID={target_pid}: {e}")
+        return None
