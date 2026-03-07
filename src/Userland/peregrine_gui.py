@@ -326,6 +326,29 @@ class PeregrineGUI:
         if pid == "N/A" or pid == os.getpid():
             return
 
+        # Wait 2 seconds before injecting to let the process initialize
+        time.sleep(2)
+
+        # Check if process is still running before injecting
+        kernel32 = ctypes.windll.kernel32
+        PROCESS_QUERY_INFORMATION = 0x0400
+        SYNCHRONIZE = 0x00100000
+        h_process = kernel32.OpenProcess(PROCESS_QUERY_INFORMATION | SYNCHRONIZE, False, pid)
+
+        if not h_process:
+            self.append_log(f"[Process Check] PID={pid} is no longer running, skipping injection")
+            return
+
+        # Check exit code - if still running, exit code is STILL_ACTIVE (259)
+        exit_code = wintypes.DWORD()
+        kernel32.GetExitCodeProcess(h_process, ctypes.byref(exit_code))
+        kernel32.CloseHandle(h_process)
+
+        STILL_ACTIVE = 259
+        if exit_code.value != STILL_ACTIVE:
+            self.append_log(f"[Process Check] PID={pid} has exited (code={exit_code.value}), skipping injection")
+            return
+
         # Inject DLL into the new process
         InjectDLL(pid, self.dll_paths, self.append_log)
 
