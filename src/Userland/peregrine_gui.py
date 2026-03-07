@@ -374,12 +374,53 @@ class PeregrineGUI:
                 self.append_log(f"[External {event}] PID {caller} → PID {target} | {size} bytes at 0x{addr:X}")
             return
 
-        # Log other IPC messages (dll_loaded, etc.)
-        try:
-            pretty = json.dumps(msg)
-        except Exception:
-            pretty = str(msg)
-        #self.append_log(f"[ipc] {pretty}")
+        if event == "VirtualAllocEx":
+            caller = msg.get("callerPID", "?")
+            target = msg.get("targetPID", "?")
+            addr = msg.get("address", 0)
+            size = msg.get("size", 0)
+            protect = msg.get("protect", "?")
+            with self.protected_pids_lock:
+                target_protected = target in self.protected_pids
+                caller_protected = caller in self.protected_pids
+            if caller != target and target_protected and not caller_protected:
+                self.append_log(f"[External VirtualAllocEx] PID {caller} -> PID {target} | {size} bytes at 0x{addr:X} protect={protect}")
+            return
+
+        if event == "VirtualProtectEx":
+            caller = msg.get("callerPID", "?")
+            target = msg.get("targetPID", "?")
+            addr = msg.get("address", 0)
+            size = msg.get("size", 0)
+            protect = msg.get("newProtect", "?")
+            with self.protected_pids_lock:
+                target_protected = target in self.protected_pids
+                caller_protected = caller in self.protected_pids
+            if caller != target and target_protected and not caller_protected:
+                self.append_log(f"[External VirtualProtectEx] PID {caller} -> PID {target} | {size} bytes at 0x{addr:X} protect={protect}")
+            return
+
+        if event == "CreateRemoteThread":
+            caller = msg.get("callerPID", "?")
+            target = msg.get("targetPID", "?")
+            start = msg.get("startAddress", 0)
+            with self.protected_pids_lock:
+                target_protected = target in self.protected_pids
+                caller_protected = caller in self.protected_pids
+            if caller != target and target_protected and not caller_protected:
+                self.append_log(f"[External CreateRemoteThread] PID {caller} -> PID {target} | start=0x{start:X}")
+            return
+
+        if event == "OpenProcess":
+            caller = msg.get("callerPID", "?")
+            target = msg.get("targetPID", "?")
+            access = msg.get("access", "?")
+            with self.protected_pids_lock:
+                target_protected = target in self.protected_pids
+                caller_protected = caller in self.protected_pids
+            if caller != target and target_protected and not caller_protected:
+                self.append_log(f"[External OpenProcess] PID {caller} -> PID {target} | access={access}")
+            return
 
     def on_ipc_error(self, err):
         self.append_log(f"[ipc-error] {err}")

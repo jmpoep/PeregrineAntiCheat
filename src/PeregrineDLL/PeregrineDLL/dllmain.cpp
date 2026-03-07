@@ -6,7 +6,6 @@
 #include <stdarg.h>
 #pragma comment(lib, "user32.lib")
 
-// Helper to log to OutputDebugString (viewable in DebugView)
 static void DebugLog(const char* format, ...) {
     char buf[512];
     va_list args;
@@ -18,191 +17,137 @@ static void DebugLog(const char* format, ...) {
 
 static volatile LONG g_console_ready = 0;
 static void EnsureConsole() {
-    // Only run once even if multiple threads race through InitThread.
     if (InterlockedCompareExchange(&g_console_ready, 1, 0) != 0) return;
-
-    // Try to attach to the parent console; fall back to allocating a new one.
-    if (!AttachConsole(ATTACH_PARENT_PROCESS)) {
-        AllocConsole();
-    }
-
-    // Redirect stdout and stderr to the console for quick diagnostics.
+    if (!AttachConsole(ATTACH_PARENT_PROCESS)) AllocConsole();
     FILE* dummy = nullptr;
     freopen_s(&dummy, "CONOUT$", "w", stdout);
     freopen_s(&dummy, "CONOUT$", "w", stderr);
     freopen_s(&dummy, "CONIN$", "r", stdin);
     setvbuf(stdout, nullptr, _IONBF, 0);
     setvbuf(stderr, nullptr, _IONBF, 0);
-
-    // Make console visible and bring to front
     HWND consoleWnd = GetConsoleWindow();
     if (consoleWnd) {
-        SetWindowPos(consoleWnd, HWND_TOPMOST, 0, 0, 0, 0,
-                     SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+        SetWindowPos(consoleWnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
         SetConsoleTitle(L"PeregrineDLL Debug Console");
         ShowWindow(consoleWnd, SW_SHOW);
         SetForegroundWindow(consoleWnd);
     }
 }
 
-static int PID = GetCurrentProcessId();
+static DWORD PID = GetCurrentProcessId();
 static volatile LONG g_inited = 0;
 
-
-typedef BOOL(WINAPI* ReadProcessMemory_t)(
-    HANDLE hProcess,
-    LPCVOID lpBaseAddress,
-    LPVOID lpBuffer,
-    SIZE_T nSize,
-    SIZE_T* lpNumberOfBytesRead);
-
-typedef BOOL(WINAPI* WriteProcessMemory_t)(
-    HANDLE hProcess,
-    LPVOID lpBaseAddress,
-    LPCVOID lpBuffer,
-    SIZE_T nSize,
-    SIZE_T* lpNumberOfBytesWritten);
-
-// Native API typedefs (NTSTATUS return value)
 typedef LONG NTSTATUS;
 #define NT_SUCCESS(Status) (((NTSTATUS)(Status)) >= 0)
 
-typedef NTSTATUS(NTAPI* NtReadVirtualMemory_t)(
-    HANDLE ProcessHandle,
-    PVOID BaseAddress,
-    PVOID Buffer,
-    SIZE_T NumberOfBytesToRead,
-    PSIZE_T NumberOfBytesRead);
+// ============================================================
+// Original function pointers
+// ============================================================
+typedef BOOL(WINAPI* ReadProcessMemory_t)(HANDLE, LPCVOID, LPVOID, SIZE_T, SIZE_T*);
+typedef BOOL(WINAPI* WriteProcessMemory_t)(HANDLE, LPVOID, LPCVOID, SIZE_T, SIZE_T*);
+typedef NTSTATUS(NTAPI* NtReadVirtualMemory_t)(HANDLE, PVOID, PVOID, SIZE_T, PSIZE_T);
+typedef NTSTATUS(NTAPI* NtWriteVirtualMemory_t)(HANDLE, PVOID, PVOID, SIZE_T, PSIZE_T);
+typedef LPVOID(WINAPI* VirtualAllocEx_t)(HANDLE, LPVOID, SIZE_T, DWORD, DWORD);
+typedef BOOL(WINAPI* VirtualProtectEx_t)(HANDLE, LPVOID, SIZE_T, DWORD, PDWORD);
+typedef HANDLE(WINAPI* CreateRemoteThread_t)(HANDLE, LPSECURITY_ATTRIBUTES, SIZE_T, LPTHREAD_START_ROUTINE, LPVOID, DWORD, LPDWORD);
+typedef HANDLE(WINAPI* OpenProcess_t)(DWORD, BOOL, DWORD);
 
-typedef NTSTATUS(NTAPI* NtWriteVirtualMemory_t)(
-    HANDLE ProcessHandle,
-    PVOID BaseAddress,
-    PVOID Buffer,
-    SIZE_T NumberOfBytesToWrite,
-    PSIZE_T NumberOfBytesWritten);
+static ReadProcessMemory_t      oReadProcessMemory = nullptr;
+static WriteProcessMemory_t     oWriteProcessMemory = nullptr;
+static NtReadVirtualMemory_t    oNtReadVirtualMemory = nullptr;
+static NtWriteVirtualMemory_t   oNtWriteVirtualMemory = nullptr;
+static VirtualAllocEx_t         oVirtualAllocEx = nullptr;
+static VirtualProtectEx_t       oVirtualProtectEx = nullptr;
+static CreateRemoteThread_t     oCreateRemoteThread = nullptr;
+static OpenProcess_t            oOpenProcess = nullptr;
 
-static ReadProcessMemory_t oReadProcessMemory = nullptr;
-static WriteProcessMemory_t oWriteProcessMemory = nullptr;
-static NtReadVirtualMemory_t oNtReadVirtualMemory = nullptr;
-static NtWriteVirtualMemory_t oNtWriteVirtualMemory = nullptr;
+// ============================================================
+// Hook implementations
+// ============================================================
 
-static BOOL WINAPI HookReadProcessMemory(
-    HANDLE hProcess,
-    LPCVOID lpBaseAddress,
-    LPVOID lpBuffer,
-    SIZE_T nSize,
-    SIZE_T* lpNumberOfBytesRead)
-{
-    // Call original function first
-    BOOL result = oReadProcessMemory
-        ? oReadProcessMemory(hProcess, lpBaseAddress, lpBuffer, nSize, lpNumberOfBytesRead)
-        : FALSE;
-
+static BOOL WINAPI HookReadProcessMemory(HANDLE hProcess, LPCVOID lpBase, LPVOID lpBuf, SIZE_T nSize, SIZE_T* pRead) {
+    BOOL result = oReadProcessMemory(hProcess, lpBase, lpBuf, nSize, pRead);
     DWORD targetPID = GetProcessId(hProcess);
-    DWORD gle = GetLastError();
-
-    // Log to IPC
-    ipc_log_readprocessmemory(
-        hProcess,
-        targetPID,
-        lpBaseAddress,
-        nSize,
-        lpNumberOfBytesRead ? *lpNumberOfBytesRead : 0,
-        result,
-        gle,
-        PID);
-
+    ipc_log_event("ReadProcessMemory",
+        "\"callerPID\":%lu,\"targetPID\":%lu,\"address\":%llu,\"size\":%llu",
+        PID, targetPID, (unsigned long long)(ULONG_PTR)lpBase, (unsigned long long)nSize);
     return result;
 }
 
-static BOOL WINAPI HookWriteProcessMemory(
-    HANDLE hProcess,
-    LPVOID lpBaseAddress,
-    LPCVOID lpBuffer,
-    SIZE_T nSize,
-    SIZE_T* lpNumberOfBytesWritten)
-{
-    // Call original function first
-    BOOL result = oWriteProcessMemory
-        ? oWriteProcessMemory(hProcess, lpBaseAddress, lpBuffer, nSize, lpNumberOfBytesWritten)
-        : FALSE;
-
+static BOOL WINAPI HookWriteProcessMemory(HANDLE hProcess, LPVOID lpBase, LPCVOID lpBuf, SIZE_T nSize, SIZE_T* pWritten) {
+    BOOL result = oWriteProcessMemory(hProcess, lpBase, lpBuf, nSize, pWritten);
     DWORD targetPID = GetProcessId(hProcess);
-    DWORD gle = GetLastError();
-
-    // Log to IPC
-    ipc_log_writeprocessmemory(
-        hProcess,
-        targetPID,
-        lpBaseAddress,
-        nSize,
-        lpNumberOfBytesWritten ? *lpNumberOfBytesWritten : 0,
-        result,
-        gle,
-        PID);
-
+    ipc_log_event("WriteProcessMemory",
+        "\"callerPID\":%lu,\"targetPID\":%lu,\"address\":%llu,\"size\":%llu",
+        PID, targetPID, (unsigned long long)(ULONG_PTR)lpBase, (unsigned long long)nSize);
     return result;
 }
 
-static NTSTATUS NTAPI HookNtReadVirtualMemory(
-    HANDLE ProcessHandle,
-    PVOID BaseAddress,
-    PVOID Buffer,
-    SIZE_T NumberOfBytesToRead,
-    PSIZE_T NumberOfBytesRead)
-{
-    // Call original function first
-    NTSTATUS status = oNtReadVirtualMemory
-        ? oNtReadVirtualMemory(ProcessHandle, BaseAddress, Buffer, NumberOfBytesToRead, NumberOfBytesRead)
-        : -1;
-
-    DWORD targetPID = GetProcessId(ProcessHandle);
-
-    // Log to IPC
-    ipc_log_readprocessmemory(
-        ProcessHandle,
-        targetPID,
-        BaseAddress,
-        NumberOfBytesToRead,
-        NumberOfBytesRead ? *NumberOfBytesRead : 0,
-        NT_SUCCESS(status),
-        status,
-        PID);
-
+static NTSTATUS NTAPI HookNtReadVirtualMemory(HANDLE hProcess, PVOID base, PVOID buf, SIZE_T size, PSIZE_T pRead) {
+    NTSTATUS status = oNtReadVirtualMemory(hProcess, base, buf, size, pRead);
+    DWORD targetPID = GetProcessId(hProcess);
+    ipc_log_event("ReadProcessMemory",
+        "\"callerPID\":%lu,\"targetPID\":%lu,\"address\":%llu,\"size\":%llu",
+        PID, targetPID, (unsigned long long)(ULONG_PTR)base, (unsigned long long)size);
     return status;
 }
 
-static NTSTATUS NTAPI HookNtWriteVirtualMemory(
-    HANDLE ProcessHandle,
-    PVOID BaseAddress,
-    PVOID Buffer,
-    SIZE_T NumberOfBytesToWrite,
-    PSIZE_T NumberOfBytesWritten)
-{
-    // Call original function first
-    NTSTATUS status = oNtWriteVirtualMemory
-        ? oNtWriteVirtualMemory(ProcessHandle, BaseAddress, Buffer, NumberOfBytesToWrite, NumberOfBytesWritten)
-        : -1;
-
-    DWORD targetPID = GetProcessId(ProcessHandle);
-
-    // Log to IPC
-    ipc_log_writeprocessmemory(
-        ProcessHandle,
-        targetPID,
-        BaseAddress,
-        NumberOfBytesToWrite,
-        NumberOfBytesWritten ? *NumberOfBytesWritten : 0,
-        NT_SUCCESS(status),
-        status,
-        PID);
-
+static NTSTATUS NTAPI HookNtWriteVirtualMemory(HANDLE hProcess, PVOID base, PVOID buf, SIZE_T size, PSIZE_T pWritten) {
+    NTSTATUS status = oNtWriteVirtualMemory(hProcess, base, buf, size, pWritten);
+    DWORD targetPID = GetProcessId(hProcess);
+    ipc_log_event("WriteProcessMemory",
+        "\"callerPID\":%lu,\"targetPID\":%lu,\"address\":%llu,\"size\":%llu",
+        PID, targetPID, (unsigned long long)(ULONG_PTR)base, (unsigned long long)size);
     return status;
 }
 
+static LPVOID WINAPI HookVirtualAllocEx(HANDLE hProcess, LPVOID lpAddr, SIZE_T dwSize, DWORD flType, DWORD flProtect) {
+    LPVOID result = oVirtualAllocEx(hProcess, lpAddr, dwSize, flType, flProtect);
+    DWORD targetPID = GetProcessId(hProcess);
+    if (targetPID != PID) {
+        ipc_log_event("VirtualAllocEx",
+            "\"callerPID\":%lu,\"targetPID\":%lu,\"address\":%llu,\"size\":%llu,\"protect\":\"0x%08X\"",
+            PID, targetPID, (unsigned long long)(ULONG_PTR)result, (unsigned long long)dwSize, flProtect);
+    }
+    return result;
+}
 
+static BOOL WINAPI HookVirtualProtectEx(HANDLE hProcess, LPVOID lpAddr, SIZE_T dwSize, DWORD flNew, PDWORD lpflOld) {
+    BOOL result = oVirtualProtectEx(hProcess, lpAddr, dwSize, flNew, lpflOld);
+    DWORD targetPID = GetProcessId(hProcess);
+    if (targetPID != PID) {
+        ipc_log_event("VirtualProtectEx",
+            "\"callerPID\":%lu,\"targetPID\":%lu,\"address\":%llu,\"size\":%llu,\"newProtect\":\"0x%08X\"",
+            PID, targetPID, (unsigned long long)(ULONG_PTR)lpAddr, (unsigned long long)dwSize, flNew);
+    }
+    return result;
+}
 
+static HANDLE WINAPI HookCreateRemoteThread(HANDLE hProcess, LPSECURITY_ATTRIBUTES lpAttr, SIZE_T dwStackSize,
+    LPTHREAD_START_ROUTINE lpStart, LPVOID lpParam, DWORD dwFlags, LPDWORD lpTid) {
+    HANDLE result = oCreateRemoteThread(hProcess, lpAttr, dwStackSize, lpStart, lpParam, dwFlags, lpTid);
+    DWORD targetPID = GetProcessId(hProcess);
+    if (targetPID != PID) {
+        ipc_log_event("CreateRemoteThread",
+            "\"callerPID\":%lu,\"targetPID\":%lu,\"startAddress\":%llu",
+            PID, targetPID, (unsigned long long)(ULONG_PTR)lpStart);
+    }
+    return result;
+}
 
+static HANDLE WINAPI HookOpenProcess(DWORD dwAccess, BOOL bInherit, DWORD dwPID) {
+    HANDLE result = oOpenProcess(dwAccess, bInherit, dwPID);
+    if (dwPID != PID) {
+        ipc_log_event("OpenProcess",
+            "\"callerPID\":%lu,\"targetPID\":%lu,\"access\":\"0x%08X\"",
+            PID, dwPID, dwAccess);
+    }
+    return result;
+}
+
+// ============================================================
+// Hook setup helpers
+// ============================================================
 
 static void HookExport(HMODULE mod, LPCSTR name, void** pReal, void* hook) {
     if (!mod) return;
@@ -211,87 +156,65 @@ static void HookExport(HMODULE mod, LPCSTR name, void** pReal, void* hook) {
     }
 }
 
+// Try hooking in primary module first, fall back to secondary
+static bool InstallHook(HMODULE primary, HMODULE fallback, LPCSTR name, void** pReal, void* hook) {
+    HookExport(primary, name, pReal, hook);
+    if (!*pReal && fallback)
+        HookExport(fallback, name, pReal, hook);
+    if (*pReal) {
+        DebugLog("[PeregrineDLL] Hooked %s\n", name);
+        return true;
+    }
+    DebugLog("[PeregrineDLL] Failed to hook %s\n", name);
+    return false;
+}
+
+// ============================================================
+// Init
+// ============================================================
+
 static DWORD WINAPI InitThread(LPVOID) {
     if (InterlockedCompareExchange(&g_inited, 1, 0) != 0) return 0;
-    // EnsureConsole();  // Disabled to prevent console window from opening
-    DebugLog("[PeregrineDLL] InitThread started (PID=%d)\n", PID);
+    DebugLog("[PeregrineDLL] InitThread started (PID=%lu)\n", PID);
 
     if (MH_Initialize() != MH_OK) {
-        DebugLog("[PeregrineDLL] MH_Initialize failed; aborting hooks.\n");
+        DebugLog("[PeregrineDLL] MH_Initialize failed\n");
         return 0;
     }
-    DebugLog("[PeregrineDLL] MinHook initialized successfully\n");
 
-    // write a hello world to the ipc pipe
-    DebugLog("[PeregrineDLL] Attempting to send dll_loaded event via IPC...\n");
     ipc_write_json("{\"event\":\"dll_loaded\",\"message\":\"PeregrineDLL loaded successfully.\"}");
-    DebugLog("[PeregrineDLL] IPC message sent (or failed silently if pipe not available)\n");
 
-    HMODULE kb = GetModuleHandleW(L"KernelBase.dll");
-    HMODULE k32 = GetModuleHandleW(L"kernel32.dll");
+    HMODULE kb    = GetModuleHandleW(L"KernelBase.dll");
+    HMODULE k32   = GetModuleHandleW(L"kernel32.dll");
     HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
 
-    if (!kb && !k32) {
-        DebugLog("[PeregrineDLL] Failed to locate KernelBase/kernel32 modules.\n");
-    }
+    // Memory access hooks
+    InstallHook(kb, k32, "ReadProcessMemory",  (void**)&oReadProcessMemory,  (void*)HookReadProcessMemory);
+    InstallHook(kb, k32, "WriteProcessMemory", (void**)&oWriteProcessMemory, (void*)HookWriteProcessMemory);
+    InstallHook(ntdll, NULL, "NtReadVirtualMemory",  (void**)&oNtReadVirtualMemory,  (void*)HookNtReadVirtualMemory);
+    InstallHook(ntdll, NULL, "NtWriteVirtualMemory", (void**)&oNtWriteVirtualMemory, (void*)HookNtWriteVirtualMemory);
 
-    // Hook ReadProcessMemory (kernel32/kernelbase)
-    HookExport(kb, "ReadProcessMemory", (void**)&oReadProcessMemory, (void*)HookReadProcessMemory);
-    if (!oReadProcessMemory)
-        HookExport(k32, "ReadProcessMemory", (void**)&oReadProcessMemory, (void*)HookReadProcessMemory);
-    if (oReadProcessMemory) {
-        DebugLog("[PeregrineDLL] Successfully hooked ReadProcessMemory\n");
-    } else {
-        DebugLog("[PeregrineDLL] Failed to hook ReadProcessMemory.\n");
-    }
+    // Memory manipulation hooks
+    InstallHook(kb, k32, "VirtualAllocEx",   (void**)&oVirtualAllocEx,   (void*)HookVirtualAllocEx);
+    InstallHook(kb, k32, "VirtualProtectEx", (void**)&oVirtualProtectEx, (void*)HookVirtualProtectEx);
 
-    // Hook WriteProcessMemory (kernel32/kernelbase)
-    HookExport(kb, "WriteProcessMemory", (void**)&oWriteProcessMemory, (void*)HookWriteProcessMemory);
-    if (!oWriteProcessMemory)
-        HookExport(k32, "WriteProcessMemory", (void**)&oWriteProcessMemory, (void*)HookWriteProcessMemory);
-    if (oWriteProcessMemory) {
-        DebugLog("[PeregrineDLL] Successfully hooked WriteProcessMemory\n");
-    } else {
-        DebugLog("[PeregrineDLL] Failed to hook WriteProcessMemory.\n");
-    }
-
-    // Hook NtReadVirtualMemory (ntdll - used by sophisticated cheats)
-    HookExport(ntdll, "NtReadVirtualMemory", (void**)&oNtReadVirtualMemory, (void*)HookNtReadVirtualMemory);
-    if (oNtReadVirtualMemory) {
-        DebugLog("[PeregrineDLL] Successfully hooked NtReadVirtualMemory\n");
-    } else {
-        DebugLog("[PeregrineDLL] Failed to hook NtReadVirtualMemory.\n");
-    }
-
-    // Hook NtWriteVirtualMemory (ntdll - used by sophisticated cheats)
-    HookExport(ntdll, "NtWriteVirtualMemory", (void**)&oNtWriteVirtualMemory, (void*)HookNtWriteVirtualMemory);
-    if (oNtWriteVirtualMemory) {
-        DebugLog("[PeregrineDLL] Successfully hooked NtWriteVirtualMemory\n");
-    } else {
-        DebugLog("[PeregrineDLL] Failed to hook NtWriteVirtualMemory.\n");
-    }
+    // Thread/process hooks
+    InstallHook(kb, k32, "CreateRemoteThread", (void**)&oCreateRemoteThread, (void*)HookCreateRemoteThread);
+    InstallHook(kb, k32, "OpenProcess",        (void**)&oOpenProcess,        (void*)HookOpenProcess);
 
     DebugLog("[PeregrineDLL] Initialization complete\n");
     return 0;
 }
 
-// Debug entry for rundll32 to force console visibility and keep process alive.
 extern "C" __declspec(dllexport) void CALLBACK DebugEntry(HWND, HINSTANCE, LPSTR, int) {
     EnsureConsole();
     DebugLog("[PeregrineDLL] DebugEntry running; press Ctrl+C or kill process to exit.\n");
     Sleep(INFINITE);
 }
 
-
-BOOL APIENTRY DllMain( HMODULE hModule,
-                       DWORD  ul_reason_for_call,
-                       LPVOID lpReserved
-                     )
-{
-    switch (ul_reason_for_call)
-    {
-    case DLL_PROCESS_ATTACH:
-    {
+BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserved) {
+    switch (ul_reason_for_call) {
+    case DLL_PROCESS_ATTACH: {
         HANDLE th = CreateThread(NULL, 0, InitThread, NULL, 0, NULL);
         if (th) CloseHandle(th);
         break;
@@ -303,4 +226,3 @@ BOOL APIENTRY DllMain( HMODULE hModule,
     }
     return TRUE;
 }
-
