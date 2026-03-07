@@ -95,9 +95,11 @@
   <ItemGroup>
     <ClCompile Include="AppState.c" />
     <ClCompile Include="Coms.c" />
+    <ClCompile Include="DriverScan.c" />
     <ClCompile Include="main.c" />
     <ClCompile Include="NotifyRoutine.c" />
     <ClCompile Include="obCallback.c" />
+    <ClCompile Include="ObCallbackScan.c" />
     <ClCompile Include="Protection.c" />
   </ItemGroup>
   <ItemGroup>
@@ -105,8 +107,10 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="AppState.h" />
+    <ClInclude Include="DriverScan.h" />
     <ClInclude Include="NotifyRoutine.h" />
     <ClInclude Include="obCallback.h" />
+    <ClInclude Include="ObCallbackScan.h" />
     <ClInclude Include="Protection.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

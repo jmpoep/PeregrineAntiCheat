@@ -140,6 +140,9 @@ class PeregrineGUI:
         ("[Thread OK]",             "thr_ok",      "#4ec94e"),
         ("[Thread Scan]",           "thr_scan",    "#6ab0f3"),
         ("[Blacklist]",             "blacklist",   "#e67e22"),
+        ("[Driver Blacklist]",      "drv_bl",      "#ff4444"),
+        ("[Driver Scan]",           "drv_scan",    "#6ab0f3"),
+        ("[ObCallback]",            "obcb",        "#e8a838"),
         ("[PPL]",                   "ppl",         "#4a90e2"),
         ("[DLL Inject FAIL]",       "inj_fail",    "#ff4444"),
         ("[Kernel Parse Error]",    "kerr",        "#ff4444"),
@@ -198,6 +201,10 @@ class PeregrineGUI:
         tk.Button(controls, text="Check Modules", command=self.on_check_modules, **btn_cfg).pack(side=tk.LEFT, padx=(0, 4))
         tk.Button(controls, text="Check Threads", command=self.on_check_threads, **btn_cfg).pack(side=tk.LEFT, padx=(0, 4))
         tk.Button(controls, text="Scan Blacklist", command=self.on_scan_blacklist, bg="#e67e22", fg="white", font=FONT,
+                  relief=tk.FLAT, bd=0, padx=10, pady=4, cursor="hand2").pack(side=tk.LEFT, padx=(0, 4))
+        tk.Button(controls, text="Scan Drivers", command=self.on_scan_drivers, bg="#e67e22", fg="white", font=FONT,
+                  relief=tk.FLAT, bd=0, padx=10, pady=4, cursor="hand2").pack(side=tk.LEFT, padx=(0, 4))
+        tk.Button(controls, text="Scan ObCallbacks", command=self.on_scan_ob_callbacks, bg="#e8a838", fg="white", font=FONT,
                   relief=tk.FLAT, bd=0, padx=10, pady=4, cursor="hand2").pack(side=tk.LEFT, padx=(0, 4))
         controls.pack(anchor="w", padx=10, pady=(0, 8))
 
@@ -370,6 +377,30 @@ class PeregrineGUI:
 
         except Exception as exc:
             self.append_log(f"[Blacklist] Error during scan: {exc}")
+
+    def on_scan_drivers(self):
+        """Send command 5 to kernel to enumerate loaded drivers."""
+        if not self.handle:
+            self.append_log("cannot scan drivers: not connected")
+            return
+        payload = bytes([5])
+        res = device_io_control(self.handle, IOCTL_PEREGRINE_SEND_FROM_USER, payload)
+        if res is None:
+            self.append_log("[Driver Scan] command failed")
+        else:
+            self.append_log("[Driver Scan] Scanning loaded kernel drivers...")
+
+    def on_scan_ob_callbacks(self):
+        """Send command 6 to kernel to enumerate ObRegisterCallbacks."""
+        if not self.handle:
+            self.append_log("cannot scan ObCallbacks: not connected")
+            return
+        payload = bytes([6])
+        res = device_io_control(self.handle, IOCTL_PEREGRINE_SEND_FROM_USER, payload)
+        if res is None:
+            self.append_log("[ObCallback] command failed")
+        else:
+            self.append_log("[ObCallback] Scanning registered callbacks...")
 
     def handle_process_create(self, obj):
         """Handle process_create event - injects DLL into new process."""
@@ -571,6 +602,42 @@ class PeregrineGUI:
                                     flags.append(name)
                             flag_str = "|".join(flags)
                             self.append_log(f"[Handle Access] PID={caller} -> PID={target} op={op} [{flag_str}]")
+                    elif event == "driver_scan":
+                        driver = obj.get("driver", "?")
+                        path = obj.get("path", "?")
+                        size = obj.get("size", 0)
+                        self.append_log(f"[Driver Blacklist] DETECTED: {driver} ({path}) size={size}")
+
+                    elif event == "driver_scan_complete":
+                        total = obj.get("total_drivers", 0)
+                        bl = obj.get("blacklisted_count", 0)
+                        if bl > 0:
+                            self.append_log(f"[Driver Scan] Complete: {total} drivers loaded, {bl} BLACKLISTED")
+                        else:
+                            self.append_log(f"[Driver Scan] Complete: {total} drivers loaded, none blacklisted")
+
+                    elif event == "ob_callback_found":
+                        cb_type = obj.get("type", "?")
+                        pre_drv = obj.get("pre_driver", "none")
+                        post_drv = obj.get("post_driver", "none")
+                        pre_op = obj.get("pre_op", "0x0")
+                        post_op = obj.get("post_op", "0x0")
+                        ops = obj.get("operations", "?")
+                        enabled = obj.get("enabled", False)
+                        driver = pre_drv if pre_drv != "none" else post_drv
+                        self.append_log(
+                            f"[ObCallback] type={cb_type} driver={driver} "
+                            f"pre={pre_op}({pre_drv}) post={post_op}({post_drv}) "
+                            f"ops={ops} enabled={enabled}")
+
+                    elif event == "ob_callback_scan_complete":
+                        self.append_log("[ObCallback] Scan complete")
+
+                    elif event == "ob_callback_error":
+                        cb_type = obj.get("type", "?")
+                        error = obj.get("error", "unknown")
+                        self.append_log(f"[ObCallback] Error scanning {cb_type}: {error}")
+
                 except Exception as exc:
                     self.append_log(f"[Kernel Parse Error] {exc}")
 

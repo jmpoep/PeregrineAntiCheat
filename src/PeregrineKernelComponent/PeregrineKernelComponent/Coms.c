@@ -1,5 +1,7 @@
 #include "Coms.h"
 #include "Protection.h"
+#include "DriverScan.h"
+#include "ObCallbackScan.h"
 
 static PDEVICE_OBJECT g_ComsDevice = NULL;
 static KSPIN_LOCK g_ComsLock;
@@ -68,6 +70,18 @@ static VOID ComsHandleUserCommand(_In_reads_bytes_(DataSize) const UCHAR* Data,
         } else {
             KdPrint(("Peregrine: Failed to set PID %lu to PPL: 0x%X\n", (ULONG)(ULONG_PTR)pid, status));
         }
+        break;
+    }
+
+    case 5: { // scan loaded drivers
+        KdPrint(("Peregrine: user requested driver scan\n"));
+        DriverScanEnumerate();
+        break;
+    }
+
+    case 6: { // scan ObCallbacks
+        KdPrint(("Peregrine: user requested ObCallback scan\n"));
+        ObCallbackScanEnumerate();
         break;
     }
 

@@ -32,6 +32,12 @@
     <Filter Include="Source Files\Protection">
       <UniqueIdentifier>{ebcca43a-270d-429d-b7e1-b970f49e7b72}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Source Files\DriverScan">
+      <UniqueIdentifier>{a1b2c3d4-1111-2222-3333-444455556666}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\ObCallbackScan">
+      <UniqueIdentifier>{a1b2c3d4-1111-2222-3333-444455557777}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="main.c">
@@ -52,6 +58,12 @@
     <ClCompile Include="Protection.c">
       <Filter>Source Files\Protection</Filter>
     </ClCompile>
+    <ClCompile Include="DriverScan.c">
+      <Filter>Source Files\DriverScan</Filter>
+    </ClCompile>
+    <ClCompile Include="ObCallbackScan.c">
+      <Filter>Source Files\ObCallbackScan</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <None Include="Coms.h">
@@ -70,6 +82,12 @@
     </ClInclude>
     <ClInclude Include="Protection.h">
       <Filter>Source Files\Protection</Filter>
+    </ClInclude>
+    <ClInclude Include="DriverScan.h">
+      <Filter>Source Files\DriverScan</Filter>
+    </ClInclude>
+    <ClInclude Include="ObCallbackScan.h">
+      <Filter>Source Files\ObCallbackScan</Filter>
     </ClInclude>
   </ItemGroup>
 </Project>

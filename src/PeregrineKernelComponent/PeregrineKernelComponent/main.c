@@ -3,6 +3,8 @@
 #include "obCallback.h"
 #include "NotifyRoutine.h"
 #include "AppState.h"
+#include "DriverScan.h"
+#include "ObCallbackScan.h"
 
 VOID DriverUnload(PDRIVER_OBJECT DriverObject) {
     UNREFERENCED_PARAMETER(DriverObject);
