@@ -1,15 +1,18 @@
-// Prevents additional console window on Windows in release, DO NOT REMOVE!!
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+// Console window kept visible for debug output
+// #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
     #[cfg(windows)]
     {
         if !is_elevated() {
+            eprintln!("[DBG] Not elevated, requesting UAC...");
             elevate();
             std::process::exit(0);
         }
+        eprintln!("[DBG] Running elevated, PID={}", std::process::id());
     }
 
+    eprintln!("[DBG] Starting Tauri...");
     peregrine_tauri_lib::run()
 }
 

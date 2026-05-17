@@ -1,5 +1,5 @@
 #pragma once
-#include <ntddk.h>
+#include <fltKernel.h>
 
 #define INJ_POOL_TAG    'jnIp'
 #define INJ_MAX_TARGETS 16

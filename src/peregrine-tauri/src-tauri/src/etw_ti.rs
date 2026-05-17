@@ -17,8 +17,9 @@ const KW_QUEUEAPC_REMOTE: u64 = 0x1000;
 const KW_SETCTX_REMOTE: u64 = 0x4000;
 const KW_READVM_REMOTE: u64 = 0x20000;
 const KW_WRITEVM_REMOTE: u64 = 0x80000;
-const KW_SUSPEND_THREAD: u64 = 0x100000;
-const KW_RESUME_THREAD: u64 = 0x200000;
+// Suspend/resume have different field layouts, skip for now
+// const KW_SUSPEND_THREAD: u64 = 0x100000;
+// const KW_RESUME_THREAD: u64 = 0x200000;
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct TiEvent {
@@ -43,7 +44,7 @@ unsafe extern "system" fn trace_callback(record: *mut EVENT_RECORD) {
     let data = ev.UserData as *const u8;
     let data_len = ev.UserDataLength as usize;
 
-    if data.is_null() || data_len < 60 {
+    if data.is_null() || data_len < 40 {
         return;
     }
 
@@ -61,10 +62,6 @@ unsafe extern "system" fn trace_callback(record: *mut EVENT_RECORD) {
         "READVM_REMOTE"
     } else if kw & KW_WRITEVM_REMOTE != 0 {
         "WRITEVM_REMOTE"
-    } else if kw & KW_SUSPEND_THREAD != 0 {
-        "SUSPEND_THREAD"
-    } else if kw & KW_RESUME_THREAD != 0 {
-        "RESUME_THREAD"
     } else {
         return;
     };
@@ -161,7 +158,7 @@ pub fn start_etw_session(stop: Arc<AtomicBool>) -> Result<TiReceiver, String> {
     // Enable TI provider
     let enable_kw = KW_ALLOCVM_REMOTE | KW_PROTECTVM_REMOTE | KW_MAPVIEW_REMOTE
         | KW_QUEUEAPC_REMOTE | KW_SETCTX_REMOTE | KW_READVM_REMOTE
-        | KW_WRITEVM_REMOTE | KW_SUSPEND_THREAD | KW_RESUME_THREAD;
+        | KW_WRITEVM_REMOTE;
 
     let err = unsafe {
         EnableTraceEx2(

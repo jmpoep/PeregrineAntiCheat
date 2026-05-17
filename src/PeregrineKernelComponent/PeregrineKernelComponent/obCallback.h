@@ -1,5 +1,5 @@
 #pragma once
-#include <ntddk.h>
+#include <fltKernel.h>
 
 #ifndef CALLBACK_H
 #define CALLBACK_H

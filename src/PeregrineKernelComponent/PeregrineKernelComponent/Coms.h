@@ -1,5 +1,5 @@
 #pragma once
-#include <ntddk.h>
+#include <fltKernel.h>
 #include "AppState.h"
 
 #define PEREGRINE_DEVICE_NAME      L"\\Device\\Peregrine"

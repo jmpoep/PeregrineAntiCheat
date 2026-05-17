@@ -1,5 +1,5 @@
 #pragma once
-#include <ntddk.h>
+#include <fltKernel.h>
 
 VOID StateInit(VOID);
 NTSTATUS StateAddPid(HANDLE pid);      // STATUS_SUCCESS / STATUS_INSUFFICIENT_RESOURCES / STATUS_ALREADY_COMMITTED

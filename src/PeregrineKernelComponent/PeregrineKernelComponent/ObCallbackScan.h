@@ -1,5 +1,5 @@
 #pragma once
-#include <ntddk.h>
+#include <fltKernel.h>
 
 // Enumerate all ObRegisterCallbacks entries on PsProcessType and PsThreadType.
 // Reports each callback's altitude, pre/post function addresses, and owning driver to userland.

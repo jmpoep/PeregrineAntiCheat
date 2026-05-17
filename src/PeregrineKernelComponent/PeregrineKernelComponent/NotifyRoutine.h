@@ -1,5 +1,5 @@
 #pragma once
-#include <ntddk.h>
+#include <fltKernel.h>
 
 VOID CreateProcessNotifyRoutineEx(
     _Inout_ PEPROCESS Process,

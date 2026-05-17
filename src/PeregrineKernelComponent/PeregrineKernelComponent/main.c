@@ -1,15 +1,17 @@
-#include <ntddk.h>
+#include <fltKernel.h>
 #include "Coms.h"
 #include "obCallback.h"
 #include "NotifyRoutine.h"
 #include "AppState.h"
 #include "ApcInjection.h"
+#include "MiniFilter.h"
 #include "DriverScan.h"
 #include "ObCallbackScan.h"
 #include "SystemCheck.h"
 
 VOID DriverUnload(PDRIVER_OBJECT DriverObject) {
     UNREFERENCED_PARAMETER(DriverObject);
+    MfCleanup();
     unregisterNotifyRoutine();
     unregisterRegistration();
     InjCleanup();
@@ -18,9 +20,8 @@ VOID DriverUnload(PDRIVER_OBJECT DriverObject) {
 }
 
 NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath) {
-    UNREFERENCED_PARAMETER(RegistryPath);
     KdPrint(("Peregrine: DriverEntry called\n"));
-    
+
     NTSTATUS status = ComsInitialize(DriverObject);
     if (!NT_SUCCESS(status)) {
         KdPrint(("Peregrine: ComsInitialize failed 0x%X\n", status));
@@ -47,7 +48,10 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath) 
 	StateInit();
     InjInit();
 
-   
+    status = MfInit(DriverObject, RegistryPath);
+    if (!NT_SUCCESS(status)) {
+        KdPrint(("Peregrine: MfInit failed 0x%X (minifilter disabled, rest OK)\n", status));
+    }
 
     return STATUS_SUCCESS;
 }

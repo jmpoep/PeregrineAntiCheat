@@ -65,28 +65,11 @@ VOID CreateProcessNotifyRoutineEx(
 
 
 
-    CHAR json[COMS_MAX_MESSAGE_SIZE];
     if (CreateInfo != NULL) {
         InjOnProcessCreate(ProcessId, CreateInfo);
-
-        RtlStringCchPrintfA(
-            json,
-            ARRAYSIZE(json),
-            "{ \"event\": \"process_create\", \"pid\": %lu, \"ppid\": %lu, \"image\": \"%s\" }",
-            (ULONG)(ULONG_PTR)ProcessId,
-            (ULONG)(ULONG_PTR)CreateInfo->ParentProcessId,
-            imageName);
     } else {
         InjOnProcessExit(ProcessId);
-
-        RtlStringCchPrintfA(
-            json,
-            ARRAYSIZE(json),
-            "{ \"event\": \"process_exit\", \"pid\": %lu }",
-            (ULONG)(ULONG_PTR)ProcessId);
     }
-
-    SendJsonString(json);
 }
 
 VOID CreateThreadNotifyRoutine(

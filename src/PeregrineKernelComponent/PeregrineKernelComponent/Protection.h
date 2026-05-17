@@ -1,5 +1,5 @@
 #pragma once
-#include <ntddk.h>
+#include <fltKernel.h>
 
 // Set a process to Protected Process Light (PPL) status
 NTSTATUS ProtectionSetProcessPPL(_In_ HANDLE ProcessId);

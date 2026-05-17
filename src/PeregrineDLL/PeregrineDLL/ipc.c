@@ -1,4 +1,3 @@
-// Simple IPC helper for sending JSON events to the named pipe listener.
 #include <stdio.h>
 #include "ipc.h"
 #include <string.h>
@@ -7,47 +6,59 @@
 
 #define IPC_PIPE_NAMEA "\\\\.\\pipe\\peregrine_ipc"
 
-static void DebugLog(const char* format, ...) {
-    char buf[512];
-    va_list args;
-    va_start(args, format);
-    vsnprintf(buf, sizeof(buf), format, args);
-    va_end(args);
-    OutputDebugStringA(buf);
+static HANDLE g_pipe = INVALID_HANDLE_VALUE;
+static CRITICAL_SECTION g_lock;
+static volatile LONG g_lock_init = 0;
+
+static void EnsureLock(void) {
+    if (InterlockedCompareExchange(&g_lock_init, 1, 0) == 0)
+        InitializeCriticalSection(&g_lock);
 }
 
-static ULONGLONG ptr_to_ull(const void* p) {
-    return (ULONGLONG)(ULONG_PTR)p;
-}
+static HANDLE GetPipe(void) {
+    if (g_pipe != INVALID_HANDLE_VALUE)
+        return g_pipe;
 
-void ipc_write_json(const char* json) {
-    if (!json) return;
+    if (!WaitNamedPipeA(IPC_PIPE_NAMEA, 1000))
+        return INVALID_HANDLE_VALUE;
 
-    if (!WaitNamedPipeA(IPC_PIPE_NAMEA, 500)) {
-        DebugLog("[IPC] Pipe not available (err=%lu)\n", GetLastError());
-        return;
-    }
-
-    HANDLE h = CreateFileA(
+    g_pipe = CreateFileA(
         IPC_PIPE_NAMEA,
         GENERIC_WRITE,
-        0,
-        NULL,
+        0, NULL,
         OPEN_EXISTING,
         FILE_ATTRIBUTE_NORMAL,
         NULL);
 
+    return g_pipe;
+}
+
+static void ClosePipe(void) {
+    if (g_pipe != INVALID_HANDLE_VALUE) {
+        CloseHandle(g_pipe);
+        g_pipe = INVALID_HANDLE_VALUE;
+    }
+}
+
+void ipc_write_json(const char* json) {
+    if (!json) return;
+    EnsureLock();
+
+    EnterCriticalSection(&g_lock);
+
+    HANDLE h = GetPipe();
     if (h == INVALID_HANDLE_VALUE) {
-        DebugLog("[IPC] CreateFile failed: %lu\n", GetLastError());
+        LeaveCriticalSection(&g_lock);
         return;
     }
 
     DWORD len = (DWORD)strlen(json);
     DWORD written = 0;
     if (!WriteFile(h, json, len, &written, NULL)) {
-        DebugLog("[IPC] WriteFile failed: %lu\n", GetLastError());
+        ClosePipe();
     }
-    CloseHandle(h);
+
+    LeaveCriticalSection(&g_lock);
 }
 
 void ipc_log_event(const char* event, const char* fmt, ...) {

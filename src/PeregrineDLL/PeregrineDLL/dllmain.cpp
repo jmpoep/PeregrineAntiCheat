@@ -4,7 +4,7 @@
 #include "ipc.h"
 #include <stdio.h>
 #include <stdarg.h>
-#pragma comment(lib, "user32.lib")
+// user32 loaded dynamically only when needed (DebugEntry)
 
 static void DebugLog(const char* format, ...) {
     char buf[512];
@@ -25,13 +25,6 @@ static void EnsureConsole() {
     freopen_s(&dummy, "CONIN$", "r", stdin);
     setvbuf(stdout, nullptr, _IONBF, 0);
     setvbuf(stderr, nullptr, _IONBF, 0);
-    HWND consoleWnd = GetConsoleWindow();
-    if (consoleWnd) {
-        SetWindowPos(consoleWnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
-        SetConsoleTitle(L"PeregrineDLL Debug Console");
-        ShowWindow(consoleWnd, SW_SHOW);
-        SetForegroundWindow(consoleWnd);
-    }
 }
 
 static DWORD PID = GetCurrentProcessId();
@@ -222,8 +215,11 @@ extern "C" __declspec(dllexport) void CALLBACK DebugEntry(HWND, HINSTANCE, LPSTR
 }
 
 BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserved) {
+    UNREFERENCED_PARAMETER(hModule);
+    UNREFERENCED_PARAMETER(lpReserved);
     switch (ul_reason_for_call) {
     case DLL_PROCESS_ATTACH: {
+        DisableThreadLibraryCalls(hModule);
         HANDLE th = CreateThread(NULL, 0, InitThread, NULL, 0, NULL);
         if (th) CloseHandle(th);
         break;

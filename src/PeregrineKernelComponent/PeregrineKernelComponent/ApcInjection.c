@@ -45,19 +45,8 @@ NTKERNELAPI BOOLEAN  KeTestAlertThread(_In_ KPROCESSOR_MODE AlertMode);
 NTKERNELAPI NTSTATUS PsWrapApcWow64Thread(
     _Inout_ PVOID* ApcContext, _Inout_ PVOID* ApcRoutine);
 
-typedef struct _INJ_APC_STATE {
-    UCHAR Opaque[48];
-} INJ_APC_STATE;
-
-NTKERNELAPI VOID KeStackAttachProcess(
-    _Inout_ PEPROCESS Process, _Out_ PVOID ApcState);
-NTKERNELAPI VOID KeUnstackDetachProcess(
-    _In_ PVOID ApcState);
-
-NTSYSAPI NTSTATUS NTAPI ZwAllocateVirtualMemory(
-    _In_ HANDLE ProcessHandle, _Inout_ PVOID* BaseAddress,
-    _In_ ULONG_PTR ZeroBits, _Inout_ PSIZE_T RegionSize,
-    _In_ ULONG AllocationType, _In_ ULONG Protect);
+/* fltKernel.h provides KeStackAttachProcess, KeUnstackDetachProcess,
+   ZwAllocateVirtualMemory, PsLookupProcessByProcessId, etc. */
 
 /* ------------------------------------------------------------------ */
 /*  Shellcode: calls LdrLoadDll(NULL, NULL, &UnicodeString, &hMod)    */

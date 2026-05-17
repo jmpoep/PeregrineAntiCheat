@@ -82,12 +82,16 @@
     </DriverSign>
     <Link>
       <AdditionalOptions>/INTEGRITYCHECK %(AdditionalOptions)</AdditionalOptions>
+      <AdditionalDependencies>%(AdditionalDependencies);fltMgr.lib</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <DriverSign>
       <FileDigestAlgorithm>sha256</FileDigestAlgorithm>
     </DriverSign>
+    <Link>
+      <AdditionalDependencies>%(AdditionalDependencies);fltMgr.lib</AdditionalDependencies>
+    </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
     <FilesToPackage Include="$(TargetPath)" />
@@ -95,6 +99,8 @@
   <ItemGroup>
     <ClCompile Include="ApcInjection.c" />
     <ClCompile Include="AppState.c" />
+    <ClCompile Include="MiniFilter.c" />
+    <ClCompile Include="PicCallback.c" />
     <ClCompile Include="Coms.c" />
     <ClCompile Include="DriverScan.c" />
     <ClCompile Include="main.c" />
@@ -106,10 +112,13 @@
   </ItemGroup>
   <ItemGroup>
     <None Include="Coms.h" />
+    <None Include="PeregrineKernelComponent.inf" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="ApcInjection.h" />
     <ClInclude Include="AppState.h" />
+    <ClInclude Include="MiniFilter.h" />
+    <ClInclude Include="PicCallback.h" />
     <ClInclude Include="DriverScan.h" />
     <ClInclude Include="NotifyRoutine.h" />
     <ClInclude Include="obCallback.h" />

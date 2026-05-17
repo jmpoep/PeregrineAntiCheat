@@ -3,7 +3,8 @@
   import { listen } from "@tauri-apps/api/event";
   import { onMount } from "svelte";
 
-  type LogEntry = { text: string; tag: string; ts: string };
+  type LogEntry = { id: number; text: string; tag: string; ts: string };
+  let nextId = 0;
 
   let status = $state("Disconnected");
   let statusColor = $state("#c83c3c");
@@ -32,7 +33,7 @@
   }
 
   function addLog(text: string, tag = "default") {
-    logs = [...logs.slice(-(MAX_LOGS - 1)), { text, tag, ts: now() }];
+    logs = [...logs.slice(-(MAX_LOGS - 1)), { id: nextId++, text, tag, ts: now() }];
     requestAnimationFrame(() => logEl?.scrollTo(0, logEl.scrollHeight));
   }
 
@@ -134,6 +135,18 @@
       addLog(`clear_pids failed: ${e}`, "err");
     }
   }
+  async function setPic() {
+    const pid = requirePid();
+    if (pid === null) return;
+    if (!requireDriver()) return;
+    try {
+      const msg: string = await invoke("pic_set", { pid });
+      addLog(`[PIC] ${msg}`, "ok");
+    } catch (e: any) {
+      addLog(`[PIC] failed: ${e}`, "err");
+    }
+  }
+
   async function setPpl() {
     const pid = requirePid();
     if (pid === null) return;
@@ -273,6 +286,14 @@
       case "thread_exit":
         break;
 
+      case "file_access":
+        addLog(`[File Access] PID=${d.pid} op=${d.op} ${d.path}`, "handle");
+        break;
+
+      case "pic_set":
+        addLog(`[PIC] Instrumentation callback set on PID=${d.pid} buffer=0x${(d.buffer ?? 0).toString(16).toUpperCase()}`, "ok");
+        break;
+
       case "image_load":
         addLog(`[Image Load] PID=${d.pid} ${d.image ?? "?"}`, "imgload");
         break;
@@ -376,28 +397,27 @@
     const callerProtected = protectedPids.includes(caller);
 
     if (event === "ReadProcessMemory" || event === "WriteProcessMemory") {
-      if (d.success && !isSelf && targetProtected && !callerProtected) {
+      if (!isSelf)
         addLog(`[External ${event}] PID ${caller} → PID ${target} | ${d.size ?? 0} bytes at 0x${(d.address ?? 0).toString(16).toUpperCase()}`, "handle");
-      }
       return;
     }
     if (event === "VirtualAllocEx") {
-      if (!isSelf && targetProtected && !callerProtected)
+      if (!isSelf)
         addLog(`[External VirtualAllocEx] PID ${caller} -> PID ${target} | ${d.size} bytes at 0x${(d.address??0).toString(16).toUpperCase()} protect=${d.protect}`, "handle");
       return;
     }
     if (event === "VirtualProtectEx") {
-      if (!isSelf && targetProtected && !callerProtected)
+      if (!isSelf)
         addLog(`[External VirtualProtectEx] PID ${caller} -> PID ${target} | ${d.size} bytes protect=${d.newProtect}`, "handle");
       return;
     }
     if (event === "CreateRemoteThread") {
-      if (!isSelf && targetProtected && !callerProtected)
+      if (!isSelf)
         addLog(`[External CreateRemoteThread] PID ${caller} -> PID ${target} | start=0x${(d.startAddress??0).toString(16).toUpperCase()}`, "remote_thr");
       return;
     }
     if (event === "OpenProcess") {
-      if (!isSelf && targetProtected && !callerProtected)
+      if (!isSelf)
         addLog(`[External OpenProcess] PID ${caller} -> PID ${target} | access=${d.access}`, "handle");
       return;
     }
@@ -406,9 +426,15 @@
   }
 
   onMount(async () => {
-    await listen("driver-event", (ev: any) => handleDriverEvent(ev.payload));
-    await listen("ipc-event", (ev: any) => handleIpcEvent(ev.payload));
-    await listen("etw-ti-event", (ev: any) => handleEtwTiEvent(ev.payload));
+    await listen("driver-event", (ev: any) => {
+      try { handleDriverEvent(ev.payload); } catch (e) { console.error("driver-event error:", e); }
+    });
+    await listen("ipc-event", (ev: any) => {
+      try { handleIpcEvent(ev.payload); } catch (e) { console.error("ipc-event error:", e); }
+    });
+    await listen("etw-ti-event", (ev: any) => {
+      try { handleEtwTiEvent(ev.payload); } catch (e) { console.error("etw-ti-event error:", e); }
+    });
     connect();
   });
 </script>
@@ -434,6 +460,7 @@
     <button class="btn" onclick={removePid}>Remove</button>
     <button class="btn" onclick={clearAll}>Clear</button>
     <button class="btn accent" onclick={setPpl}>PPL</button>
+    <button class="btn" style="background:#9b59b6;color:white" onclick={setPic}>PIC</button>
     <span style="color:#585b70">|</span>
     <input type="text" bind:value={targetInput} placeholder="target.exe" class="pid-input" style="width:110px" />
     <button class="btn accent" onclick={addTarget}>Inject</button>
@@ -452,7 +479,7 @@
   </nav>
 
   <div class="log" bind:this={logEl}>
-    {#each logs as entry (entry.ts + entry.text)}
+    {#each logs as entry (entry.id)}
       <div class="log-line" style="color: {tagColors[entry.tag] ?? tagColors.default}">
         <span class="ts">{entry.ts}</span> {entry.text}
       </div>
