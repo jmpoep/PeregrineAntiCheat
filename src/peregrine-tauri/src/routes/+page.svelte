@@ -220,6 +220,30 @@
     } catch (e: any) { addLog(`blacklist scan failed: ${e}`, "err"); }
   }
 
+  let etwRunning = $state(false);
+
+  async function startEtwTi() {
+    if (etwRunning) { addLog("[ETW-TI] already running", "info"); return; }
+    if (!requireDriver()) return;
+    addLog("[ETW-TI] Setting PPL and starting trace...", "info");
+    try {
+      const msg: string = await invoke("start_etw_ti");
+      etwRunning = true;
+      addLog(`[ETW-TI] ${msg}`, "apc_ok");
+    } catch (e: any) {
+      addLog(`[ETW-TI] failed: ${e}`, "err");
+    }
+  }
+
+  function handleEtwTiEvent(d: any) {
+    if (!d) return;
+    const t = d.event_type ?? "?";
+    const prot = d.protection ? `0x${d.protection.toString(16)}` : "";
+
+    const tag = t.includes("REMOTE") ? "suspicious" : "info";
+    addLog(`[ETW-TI] ${t} | PID ${d.caller_pid} → ${d.target_pid} | 0x${(d.base_address ?? 0).toString(16).toUpperCase()} size=0x${(d.region_size ?? 0).toString(16)} ${prot}`, tag);
+  }
+
   async function driverCmd(name: string) {
     if (!requireDriver()) return;
     try {
@@ -384,6 +408,7 @@
   onMount(async () => {
     await listen("driver-event", (ev: any) => handleDriverEvent(ev.payload));
     await listen("ipc-event", (ev: any) => handleIpcEvent(ev.payload));
+    await listen("etw-ti-event", (ev: any) => handleEtwTiEvent(ev.payload));
     connect();
   });
 </script>
@@ -423,6 +448,7 @@
     <button class="btn warn" onclick={() => driverCmd("scan_drivers")}>Drivers</button>
     <button class="btn warn" onclick={() => driverCmd("scan_ob_callbacks")}>ObCB</button>
     <button class="btn purple" onclick={() => driverCmd("system_check")}>SysChk</button>
+    <button class="btn" style="background:#e74c3c;color:white" onclick={startEtwTi}>ETW-TI</button>
   </nav>
 
   <div class="log" bind:this={logEl}>

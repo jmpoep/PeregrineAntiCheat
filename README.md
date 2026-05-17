@@ -101,6 +101,22 @@ The driver performs autonomous DLL injection via kernel APC queuing:
     - **HVCI Detection**: Checks if Hypervisor Code Integrity is enabled or disabled
     - **CPU Vendor / Hypervisor Detection**: CPUID-based check for VM/hypervisor presence
 
+## ETW Threat Intelligence (EtwTi)
+
+Peregrine consumes the `Microsoft-Windows-Threat-Intelligence` ETW provider for kernel-level telemetry — the same data source used by EDRs like Defender and CrowdStrike:
+
+- **Self-elevation to PPL**: The app sets itself to Protected Process Light (Antimalware signer) via the kernel driver, enabling access to the restricted EtwTi provider
+- **Real-time kernel events** captured via `StartTraceW` / `EnableTraceEx2` / `ProcessTrace`:
+  - `ALLOCVM_REMOTE` — remote VirtualAlloc (cross-process memory allocation)
+  - `PROTECTVM_REMOTE` — remote VirtualProtect (cross-process protection change)
+  - `MAPVIEW_REMOTE` — remote MapViewOfSection (manual mapping)
+  - `QUEUEAPC_REMOTE` — remote APC queuing (APC injection)
+  - `SETTHREADCONTEXT_REMOTE` — remote SetThreadContext (thread hijacking)
+  - `READVM_REMOTE` / `WRITEVM_REMOTE` — remote memory read/write
+  - `SUSPEND_THREAD` / `RESUME_THREAD` — thread suspension
+- Each event includes CallerPID, TargetPID, BaseAddress, RegionSize, and ProtectionMask
+- Events displayed live in the GUI with caller → target correlation
+
 ## Protection Features
 
 ### Protected Process Light (PPL)
@@ -114,6 +130,7 @@ Peregrine can elevate processes to Protected Process Light status:
 - **Kernel Driver**: C (WDM)
 - **DLL Component**: C/C++ with MinHook for API hooking
 - **Tauri GUI**: Rust backend + Svelte/TypeScript frontend
+- **ETW-TI**: Real-time kernel telemetry via PPL-protected ETW consumer
 - **Legacy GUI**: Python 3 with Tkinter
 - **IPC**: Named pipes (`\\.\pipe\peregrine_ipc`)
 - **Kernel Communication**: IOCTL codes (commands 1-11)
@@ -142,6 +159,7 @@ src/
 │   │   ├── lib.rs               # Tauri commands, driver polling, IPC polling
 │   │   ├── driver_comm.rs       # IOCTL driver communication
 │   │   ├── ipc.rs               # Named pipe server for DLL messages
+│   │   ├── etw_ti.rs            # ETW Threat Intelligence consumer (PPL)
 │   │   └── detections/          # Detection modules (Rust ports)
 │   │       ├── pe.rs            # PE parsing, process memory reading
 │   │       ├── hooks.rs         # IAT & EAT hook detection

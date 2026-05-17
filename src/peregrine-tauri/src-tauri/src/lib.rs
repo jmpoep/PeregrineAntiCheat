@@ -1,6 +1,7 @@
 mod driver_comm;
 mod ipc;
 mod detections;
+mod etw_ti;
 
 use driver_comm::{DriverHandle, SharedDriver};
 use std::sync::{Arc, Mutex};
@@ -62,6 +63,33 @@ fn add_injection_target(name: String, state: tauri::State<'_, SharedDriver>) -> 
     drv.add_injection_target(&name)?;
     drv.set_injection_enabled(true)?;
     Ok(format!("target '{}' added, injection enabled", name))
+}
+
+#[tauri::command]
+fn start_etw_ti(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, SharedDriver>,
+) -> Result<String, String> {
+    // Step 1: Set ourselves to PPL via the driver
+    let my_pid = std::process::id();
+    {
+        let guard = state.lock().map_err(|e| e.to_string())?;
+        let drv = guard.as_ref().ok_or("not connected to driver")?;
+        drv.set_ppl(my_pid)?;
+    }
+
+    // Step 2: Start ETW TI session
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let rx = etw_ti::start_etw_session(stop).map_err(|e| format!("ETW-TI failed: {e}"))?;
+
+    // Step 3: Forward events to frontend
+    std::thread::spawn(move || {
+        while let Ok(ev) = rx.recv() {
+            let _ = app.emit("etw-ti-event", &ev);
+        }
+    });
+
+    Ok(format!("ETW-TI started (PID {} set to PPL)", my_pid))
 }
 
 #[tauri::command]
@@ -208,6 +236,7 @@ pub fn run() {
             connect_driver,
             add_injection_target,
             clear_injection_targets,
+            start_etw_ti,
             add_pid,
             remove_pid,
             clear_pids,
