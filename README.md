@@ -9,11 +9,53 @@ An educational anti-cheat system demonstrating Windows kernel programming, proce
 
 ## Architecture
 
-| Component | Language | Description |
-|-----------|----------|-------------|
-| **Kernel Driver** | C (Minifilter) | ObCallbacks, notify routines, APC injection, PPL, driver/ObCallback scanning, file access monitoring |
-| **Injection DLL** | C++ (MinHook) | API hooks in target processes, IPC reporting via named pipes |
-| **Tauri GUI** | Rust + Svelte | Real-time monitoring, detection scans, injection control, ETW-TI consumer |
+```
+┌─────────────────────────────────────────────────────────────┐
+│  Tauri GUI (Rust + Svelte)                                  │
+│  peregrine-tauri.exe                                        │
+│  ┌──────────┐ ┌──────────┐ ┌───────────┐ ┌──────────────┐  │
+│  │ Driver   │ │ IPC Pipe │ │ Detection │ │ ETW-TI       │  │
+│  │ Polling  │ │ Server   │ │ Scans     │ │ Consumer     │  │
+│  └────┬─────┘ └────┬─────┘ └───────────┘ └──────────────┘  │
+│       │IOCTL       │Named Pipe                PPL+ETW       │
+├───────┼────────────┼────────────────────────────────────────┤
+│       ▼            ▼                                        │
+│  ┌─────────────────────────────────────────────────────┐    │
+│  │  Kernel Driver (Minifilter)                         │    │
+│  │  PeregrineKernelComponent.sys                       │    │
+│  │  • ObCallback (handle monitoring)                   │    │
+│  │  • Process/Thread/Image notify routines             │    │
+│  │  • APC DLL injection (shellcode + LdrLoadDll)       │    │
+│  │  • PPL elevation (EPROCESS patch)                   │    │
+│  │  • Minifilter (file access monitoring)              │    │
+│  │  • Driver/ObCallback scanning                       │    │
+│  └─────────┬───────────────────────────────────────────┘    │
+│            │ APC Injection                                   │
+│            ▼                                                 │
+│  ┌──────────────────────┐      ┌─────────────────────┐      │
+│  │  PeregrineDLL        │      │  Target Process      │      │
+│  │  (injected into      │─────▶│  (game / cheat)      │      │
+│  │   target processes)  │ IPC  │                      │      │
+│  │  • MinHook API hooks │pipe  │  APIs hooked:        │      │
+│  │  • RPM/WPM/NtR/NtW  │      │  ReadProcessMemory   │      │
+│  │  • VirtualAlloc/Prot │      │  WriteProcessMemory  │      │
+│  │  • CreateRemoteThread│      │  VirtualAllocEx ...   │      │
+│  │  • OpenProcess       │      │                      │      │
+│  └──────────────────────┘      └─────────────────────┘      │
+└─────────────────────────────────────────────────────────────┘
+```
+
+| Component | Language | Role |
+|-----------|----------|------|
+| **Kernel Driver** | C (Minifilter) | Ring-0: ObCallbacks, APC injection, PPL, notify routines, file access monitoring, driver scanning |
+| **Injection DLL** | C++ (MinHook) | Injected into targets: hooks WinAPI calls, reports via named pipe IPC |
+| **Tauri GUI** | Rust + Svelte | Userland: IOCTL commands, IPC receiver, detection scans, ETW-TI consumer, dark-themed UI |
+
+**Communication flows:**
+- **GUI ↔ Driver**: IOCTL commands (add PIDs, configure injection, trigger scans) + event polling
+- **DLL → GUI**: Named pipe `\\.\pipe\peregrine_ipc` (hook events, hello message)
+- **Driver → DLL**: APC injection at kernel32.dll load time (autonomous, no userland roundtrip)
+- **GUI → ETW**: PPL-protected trace session consuming kernel Threat Intelligence events
 
 ## Detection Capabilities
 
