@@ -128,6 +128,21 @@ src/
 test/                            # Cheat test tools (game.exe, cheat_*.exe)
 ```
 
+## Blog Posts
+
+This project has an accompanying blog series on [patchi.fyi](https://patchi.fyi):
+
+- [Anatomy of an Anti-Cheat](https://patchi.fyi/blog/peregrine-anatomy-of-an-anticheat/)
+- [ObCallbacks](https://patchi.fyi/blog/peregrine-obcallbacks/)
+- [Kernel APC Injection](https://patchi.fyi/blog/peregrine-kernel-apc-injection/)
+- [MinHook API Interception](https://patchi.fyi/blog/peregrine-minhook-api-interception/)
+- [Relocation-Aware Hashing](https://patchi.fyi/blog/peregrine-relocation-aware-hashing/)
+- [IAT/EAT Scanning](https://patchi.fyi/blog/peregrine-iat-eat-scanning/)
+- [Shellcode Thread Analysis](https://patchi.fyi/blog/peregrine-shellcode-thread-analysis/)
+- [PPL ETW Threat Intelligence](https://patchi.fyi/blog/peregrine-ppl-etw-threat-intelligence/)
+- [Minifilter Self-Defense](https://patchi.fyi/blog/peregrine-minifilter-self-defense/)
+- [Kernel Scanning](https://patchi.fyi/blog/peregrine-kernel-scanning/)
+
 ## Disclaimer
 
 **Strictly for educational purposes.** Use only in controlled environments with proper authorization.
