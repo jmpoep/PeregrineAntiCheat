@@ -27,19 +27,71 @@ typedef struct _PS_PROTECTION {
 // This will need adjustment based on your Windows version
 static ULONG g_ProtectionOffset = 0;
 
-// Function to find the protection offset dynamically
+// Scan PsIsProtectedProcess for the EPROCESS displacement operand.
+// The function reads EPROCESS.Protection with one of these instruction forms:
+//   movzx eax, byte ptr [rcx+disp32]  ->  0F B6 81 xx xx xx xx
+//   mov   al,  byte ptr [rcx+disp32]  ->  8A 81 xx xx xx xx
+//   movzx eax, byte ptr [rcx+disp8]   ->  0F B6 41 xx
+//   mov   al,  byte ptr [rcx+disp8]   ->  8A 41 xx
+static NTSTATUS FindProtectionOffsetByScan(void) {
+    UNICODE_STRING funcName;
+    RtlInitUnicodeString(&funcName, L"PsIsProtectedProcess");
+    PUCHAR func = (PUCHAR)MmGetSystemRoutineAddress(&funcName);
+    if (!func) return STATUS_NOT_FOUND;
+
+    for (ULONG i = 0; i < 32; i++) {
+        // movzx eax, byte ptr [rcx+disp32]
+        if (func[i] == 0x0F && func[i + 1] == 0xB6 && func[i + 2] == 0x81) {
+            g_ProtectionOffset = *(PULONG)(func + i + 3);
+            return STATUS_SUCCESS;
+        }
+        // mov al, byte ptr [rcx+disp32]
+        if (func[i] == 0x8A && func[i + 1] == 0x81) {
+            g_ProtectionOffset = *(PULONG)(func + i + 2);
+            return STATUS_SUCCESS;
+        }
+        // movzx eax, byte ptr [rcx+disp8]
+        if (func[i] == 0x0F && func[i + 1] == 0xB6 && func[i + 2] == 0x41) {
+            g_ProtectionOffset = (ULONG)func[i + 3];
+            return STATUS_SUCCESS;
+        }
+        // mov al, byte ptr [rcx+disp8]
+        if (func[i] == 0x8A && func[i + 1] == 0x41) {
+            g_ProtectionOffset = (ULONG)func[i + 2];
+            return STATUS_SUCCESS;
+        }
+    }
+    return STATUS_NOT_FOUND;
+}
+
+// Fallback: map OS build number -> known offset
+static NTSTATUS FindProtectionOffsetByVersion(void) {
+    RTL_OSVERSIONINFOW ver = { .dwOSVersionInfoSize = sizeof(ver) };
+    NTSTATUS status = RtlGetVersion(&ver);
+    if (!NT_SUCCESS(status)) return status;
+
+    ULONG build = ver.dwBuildNumber;
+
+    if (build >= 26100)       g_ProtectionOffset = 0x5FA;  // Win11 24H2+
+    else if (build >= 19041)  g_ProtectionOffset = 0x87A;  // Win10 2004 – Win11 23H2
+    else if (build >= 14393)  g_ProtectionOffset = 0x6CA;  // Win10 1607 – 1909
+    else if (build >= 10240)  g_ProtectionOffset = 0x6AA;  // Win10 1507
+    else return STATUS_NOT_SUPPORTED;
+
+    return STATUS_SUCCESS;
+}
+
 static NTSTATUS FindProtectionOffset(void) {
-    // Common offsets for different Windows versions (x64)
-    // Windows 10 1809-1903: 0x6CA
-    // Windows 10 1909-2004: 0x87A
-    // Windows 10 21H1+: 0x87A
-    // Windows 11: 0x87A
-
-    // For now, use a common offset (Windows 10 2004+)
-    // In production, you'd scan for this or use version detection
-    g_ProtectionOffset = 0x87A;
-
-    KdPrint(("Peregrine: Using PS_PROTECTION offset 0x%X\n", g_ProtectionOffset));
+    NTSTATUS status = FindProtectionOffsetByScan();
+    if (!NT_SUCCESS(status)) {
+        KdPrint(("Peregrine: Byte scan failed, falling back to version table\n"));
+        status = FindProtectionOffsetByVersion();
+    }
+    if (!NT_SUCCESS(status)) {
+        KdPrint(("Peregrine: Could not resolve PS_PROTECTION offset\n"));
+        return status;
+    }
+    KdPrint(("Peregrine: PS_PROTECTION offset = 0x%X\n", g_ProtectionOffset));
     return STATUS_SUCCESS;
 }
 
