@@ -4,3 +4,4 @@ pub mod patch;
 pub mod blacklist;
 pub mod overlay;
 pub mod threads;
+pub mod sigscan;

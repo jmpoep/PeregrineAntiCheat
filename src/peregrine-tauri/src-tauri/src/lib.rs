@@ -152,6 +152,13 @@ fn scan_blacklist() -> Vec<detections::blacklist::BlacklistMatch> {
 }
 
 #[tauri::command]
+fn scan_signatures(pid: u32) -> Result<Vec<detections::sigscan::SigMatch>, String> {
+    let (matches, bytes) = detections::sigscan::scan_process(pid)?;
+    eprintln!("[DBG] SigScan: {} matches in {} MB", matches.len(), bytes / (1024 * 1024));
+    Ok(matches)
+}
+
+#[tauri::command]
 fn scan_vad(pid: u32) -> Result<(), String> {
     DriverHandle::open()?.scan_vad(pid)
 }
@@ -243,6 +250,7 @@ pub fn run() {
             check_eat,
             check_threads,
             scan_blacklist,
+            scan_signatures,
             scan_vad,
             collect_hwid,
         ])

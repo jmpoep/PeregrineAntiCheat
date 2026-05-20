@@ -18,7 +18,7 @@
   const MAX_LOGS = 2000;
 
   const tagColors: Record<string, string> = {
-    ok: "#4ec94e", tamper: "#ff4444", suspicious: "#ff3333", hwid: "#10b981", vad: "#f472b6",
+    ok: "#4ec94e", tamper: "#ff4444", suspicious: "#ff3333", hwid: "#10b981", vad: "#f472b6", sig: "#fbbf24",
     remote_thr: "#ff6644", handle: "#e8a838", imgload: "#6ab0f3",
     thr_ok: "#4ec94e", blacklist: "#e67e22", drv_bl: "#ff4444",
     drv_scan: "#6ab0f3", obcb: "#e8a838", syschk: "#a78bfa",
@@ -246,6 +246,24 @@
 
     const tag = t.includes("REMOTE") ? "suspicious" : "info";
     addLog(`[ETW-TI] ${t} | PID ${d.caller_pid} → ${d.target_pid} | 0x${(d.base_address ?? 0).toString(16).toUpperCase()} size=0x${(d.region_size ?? 0).toString(16)} ${prot}`, tag);
+  }
+
+  async function scanSignatures() {
+    const pid = requirePid();
+    if (pid === null) return;
+    addLog(`[SigScan] Scanning PID ${pid}...`, "info");
+    try {
+      const res: any[] = await invoke("scan_signatures", { pid });
+      if (res.length) {
+        for (const m of res)
+          addLog(`[SigScan] MATCH "${m.pattern_name}" at ${m.address} (${m.region_protection} ${m.region_type})`, "sig");
+        addLog(`[SigScan] ${res.length} match(es) found`, "sig");
+      } else {
+        addLog(`[SigScan] PID ${pid}: No signature matches`, "ok");
+      }
+    } catch (e: any) {
+      addLog(`[SigScan] failed: ${e}`, "err");
+    }
   }
 
   async function scanVad() {
@@ -506,6 +524,7 @@
     <button class="btn" onclick={checkEat}>EAT</button>
     <button class="btn" onclick={checkThreads}>Threads</button>
     <button class="btn" style="background:#f472b6;color:white" onclick={scanVad}>VAD</button>
+    <button class="btn" style="background:#fbbf24;color:black" onclick={scanSignatures}>SigScan</button>
     <button class="btn warn" onclick={scanBlacklist}>Blacklist</button>
     <div class="spacer"></div>
     <button class="btn warn" onclick={() => driverCmd("scan_drivers")}>Drivers</button>
