@@ -24,6 +24,9 @@
     <ClInclude Include="pch.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="callstack.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="ipc.h">
       <Filter>Source Files</Filter>
     </ClInclude>
@@ -33,6 +36,9 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="pch.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="callstack.c">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="ipc.c">

@@ -66,6 +66,7 @@ An educational anti-cheat system demonstrating Windows kernel programming, proce
 | 1 | **Module Integrity** | `.text` section SHA-256: disk vs memory, relocation-aware |
 | 2 | **IAT/EAT Hook Detection** | PE import/export table scanning for entries outside known modules |
 | 3 | **External Memory Access** | DLL hooks on RPM/WPM/NtRead/NtWrite/VirtualAllocEx/VirtualProtectEx/CreateRemoteThread/OpenProcess |
+| 3b | **Call Stack Validation** | `RtlCaptureStackBackTrace` on hooked APIs — flags callers in `MEM_PRIVATE` executable memory (manual-mapped DLLs, shellcode) with cached module ranges and per-hook rate limiting |
 | 4 | **Thread & Shellcode Detection** | RIP + Win32 start address checked against loaded module ranges |
 | 5 | **Handle Access Monitoring** | Kernel ObCallback on handle create/duplicate with dangerous access flags |
 | 6 | **Process Blacklist** | Keyword scan against running process paths |
@@ -122,6 +123,7 @@ Purpose-built cheats in `test/` that showcase every detection layer:
 | `cheat_manualmap.exe <PID>` | VirtualAllocEx + fake PE + remote thread | VAD Scan (executable private memory, PE header detected) |
 | `cheat_manualmap.exe <PID> --no-header` | Same but erases PE header | VAD Scan (executable private memory, no PE header) |
 | `cheat_yara.exe <PID>` | Injects marker strings + cheat config blob | YARA Scan (`PeregrineTestCheat` rule) |
+| `cheat_callstack.exe <PID>` | Calls OpenProcess from VirtualAlloc'd RWX page | Call Stack Validation (`CallstackAnomaly`) |
 | `CheatEngine.exe` | Just existing | Blacklist Scan |
 
 Start `game.exe` first — it prints its PID and a health variable address for the cheats to target.

@@ -2,6 +2,7 @@
 #include "pch.h"
 #include "MinHook.h"
 #include "ipc.h"
+#include "callstack.h"
 #include <stdio.h>
 #include <stdarg.h>
 // user32 loaded dynamically only when needed (DebugEntry)
@@ -60,6 +61,7 @@ static OpenProcess_t            oOpenProcess = nullptr;
 
 static BOOL WINAPI HookReadProcessMemory(HANDLE hProcess, LPCVOID lpBase, LPVOID lpBuf, SIZE_T nSize, SIZE_T* pRead) {
     BOOL result = oReadProcessMemory(hProcess, lpBase, lpBuf, nSize, pRead);
+    callstack_check("ReadProcessMemory");
     DWORD targetPID = GetProcessId(hProcess);
     ipc_log_event("ReadProcessMemory",
         "\"callerPID\":%lu,\"targetPID\":%lu,\"address\":%llu,\"size\":%llu",
@@ -69,6 +71,7 @@ static BOOL WINAPI HookReadProcessMemory(HANDLE hProcess, LPCVOID lpBase, LPVOID
 
 static BOOL WINAPI HookWriteProcessMemory(HANDLE hProcess, LPVOID lpBase, LPCVOID lpBuf, SIZE_T nSize, SIZE_T* pWritten) {
     BOOL result = oWriteProcessMemory(hProcess, lpBase, lpBuf, nSize, pWritten);
+    callstack_check("WriteProcessMemory");
     DWORD targetPID = GetProcessId(hProcess);
     ipc_log_event("WriteProcessMemory",
         "\"callerPID\":%lu,\"targetPID\":%lu,\"address\":%llu,\"size\":%llu",
@@ -78,6 +81,7 @@ static BOOL WINAPI HookWriteProcessMemory(HANDLE hProcess, LPVOID lpBase, LPCVOI
 
 static NTSTATUS NTAPI HookNtReadVirtualMemory(HANDLE hProcess, PVOID base, PVOID buf, SIZE_T size, PSIZE_T pRead) {
     NTSTATUS status = oNtReadVirtualMemory(hProcess, base, buf, size, pRead);
+    callstack_check("NtReadVirtualMemory");
     DWORD targetPID = GetProcessId(hProcess);
     ipc_log_event("ReadProcessMemory",
         "\"callerPID\":%lu,\"targetPID\":%lu,\"address\":%llu,\"size\":%llu",
@@ -87,6 +91,7 @@ static NTSTATUS NTAPI HookNtReadVirtualMemory(HANDLE hProcess, PVOID base, PVOID
 
 static NTSTATUS NTAPI HookNtWriteVirtualMemory(HANDLE hProcess, PVOID base, PVOID buf, SIZE_T size, PSIZE_T pWritten) {
     NTSTATUS status = oNtWriteVirtualMemory(hProcess, base, buf, size, pWritten);
+    callstack_check("NtWriteVirtualMemory");
     DWORD targetPID = GetProcessId(hProcess);
     ipc_log_event("WriteProcessMemory",
         "\"callerPID\":%lu,\"targetPID\":%lu,\"address\":%llu,\"size\":%llu",
@@ -96,6 +101,7 @@ static NTSTATUS NTAPI HookNtWriteVirtualMemory(HANDLE hProcess, PVOID base, PVOI
 
 static LPVOID WINAPI HookVirtualAllocEx(HANDLE hProcess, LPVOID lpAddr, SIZE_T dwSize, DWORD flType, DWORD flProtect) {
     LPVOID result = oVirtualAllocEx(hProcess, lpAddr, dwSize, flType, flProtect);
+    callstack_check("VirtualAllocEx");
     DWORD targetPID = GetProcessId(hProcess);
     if (targetPID != PID) {
         ipc_log_event("VirtualAllocEx",
@@ -107,6 +113,7 @@ static LPVOID WINAPI HookVirtualAllocEx(HANDLE hProcess, LPVOID lpAddr, SIZE_T d
 
 static BOOL WINAPI HookVirtualProtectEx(HANDLE hProcess, LPVOID lpAddr, SIZE_T dwSize, DWORD flNew, PDWORD lpflOld) {
     BOOL result = oVirtualProtectEx(hProcess, lpAddr, dwSize, flNew, lpflOld);
+    callstack_check("VirtualProtectEx");
     DWORD targetPID = GetProcessId(hProcess);
     if (targetPID != PID) {
         ipc_log_event("VirtualProtectEx",
@@ -119,6 +126,7 @@ static BOOL WINAPI HookVirtualProtectEx(HANDLE hProcess, LPVOID lpAddr, SIZE_T d
 static HANDLE WINAPI HookCreateRemoteThread(HANDLE hProcess, LPSECURITY_ATTRIBUTES lpAttr, SIZE_T dwStackSize,
     LPTHREAD_START_ROUTINE lpStart, LPVOID lpParam, DWORD dwFlags, LPDWORD lpTid) {
     HANDLE result = oCreateRemoteThread(hProcess, lpAttr, dwStackSize, lpStart, lpParam, dwFlags, lpTid);
+    callstack_check("CreateRemoteThread");
     DWORD targetPID = GetProcessId(hProcess);
     if (targetPID != PID) {
         ipc_log_event("CreateRemoteThread",
@@ -130,7 +138,7 @@ static HANDLE WINAPI HookCreateRemoteThread(HANDLE hProcess, LPSECURITY_ATTRIBUT
 
 static HANDLE WINAPI HookOpenProcess(DWORD dwAccess, BOOL bInherit, DWORD dwPID) {
     HANDLE result = oOpenProcess(dwAccess, bInherit, dwPID);
-    // Only log dangerous access flags, skip query-only
+    callstack_check("OpenProcess");
     const DWORD DANGEROUS = 0x0001 | 0x0002 | 0x0008 | 0x0010 | 0x0020 | 0x0040 | 0x0800;
     if (dwPID != PID && (dwAccess & DANGEROUS)) {
         ipc_log_event("OpenProcess",
@@ -195,6 +203,7 @@ static DWORD WINAPI InitThread(LPVOID) {
     InstallHook(kb, k32, "CreateRemoteThread", (void**)&oCreateRemoteThread, (void*)HookCreateRemoteThread);
     InstallHook(kb, k32, "OpenProcess",        (void**)&oOpenProcess,        (void*)HookOpenProcess);
 
+    callstack_init();
     DebugLog("[PeregrineDLL] Initialization complete\n");
 
     char exeName[MAX_PATH] = {0};

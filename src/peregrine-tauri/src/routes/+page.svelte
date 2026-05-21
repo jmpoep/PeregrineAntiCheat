@@ -241,11 +241,14 @@
 
   function handleEtwTiEvent(d: any) {
     if (!d) return;
+    const target = d.target_pid ?? 0;
+    if (!protectedPids.includes(target)) return;
+
     const t = d.event_type ?? "?";
     const prot = d.protection ? `0x${d.protection.toString(16)}` : "";
 
     const tag = t.includes("REMOTE") ? "suspicious" : "info";
-    addLog(`[ETW-TI] ${t} | PID ${d.caller_pid} → ${d.target_pid} | 0x${(d.base_address ?? 0).toString(16).toUpperCase()} size=0x${(d.region_size ?? 0).toString(16)} ${prot}`, tag);
+    addLog(`[ETW-TI] ${t} | PID ${d.caller_pid} → ${target} | 0x${(d.base_address ?? 0).toString(16).toUpperCase()} size=0x${(d.region_size ?? 0).toString(16)} ${prot}`, tag);
   }
 
   async function scanSignatures() {
@@ -473,6 +476,10 @@
     if (event === "OpenProcess") {
       if (!isSelf)
         addLog(`[External OpenProcess] PID ${caller} -> PID ${target} | access=${d.access}`, "handle");
+      return;
+    }
+    if (event === "CallstackAnomaly") {
+      addLog(`[Callstack Anomaly] hook=${d.hook} | suspicious addr=${d.address} frame=${d.frameIndex} region=${d.regionBase} size=${d.regionSize} protect=${d.protect}`, "suspicious");
       return;
     }
 

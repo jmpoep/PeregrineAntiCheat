@@ -13,6 +13,7 @@ cl /nologo /O2 cheat_patch.c /Fe:cheat_patch.exe /link psapi.lib
 cl /nologo /O2 CheatEngine.c /Fe:CheatEngine.exe
 cl /nologo /O2 cheat_manualmap.c /Fe:cheat_manualmap.exe
 cl /nologo /O2 cheat_yara.c /Fe:cheat_yara.exe
+cl /nologo /O2 cheat_callstack.c /Fe:cheat_callstack.exe
 cl /nologo /O2 /LD payload.c /Fe:payload.dll
 
 echo.
@@ -44,3 +45,7 @@ echo    cheat_manualmap.exe ^<PID^> --no-header  ^<-- advanced: erases PE header
 echo.
 echo 6. Blacklist detection:
 echo    CheatEngine.exe                 ^<-- then click Blacklist in Peregrine
+echo.
+echo 7. Call-stack evasion (DLL hook call-stack validation):
+echo    game.exe                        ^<-- note PID
+echo    cheat_callstack.exe ^<PID^>      ^<-- inject DLL into this process, then Enter
