@@ -6,6 +6,62 @@
 #include "ApcInjection.h"
 #include "Hwid.h"
 #include "VadScan.h"
+#include <wdmsec.h>
+#include <ntstrsafe.h>
+
+#pragma comment(lib, "wdmsec.lib")
+
+/* Administrators + SYSTEM only — not world-open. */
+#define PEREGRINE_DEVICE_SDDL L"D:P(A;;GA;;;SY)(A;;GA;;;BA)"
+
+BOOLEAN JsonEscapeString(
+    _Out_writes_bytes_(DestSize) PCHAR Dest,
+    _In_ SIZE_T DestSize,
+    _In_opt_ PCSTR Src)
+{
+    if (!Dest || DestSize == 0)
+        return FALSE;
+
+    Dest[0] = '\0';
+    if (!Src)
+        return TRUE;
+
+    SIZE_T out = 0;
+    for (const unsigned char* p = (const unsigned char*)Src; *p; p++) {
+        CHAR esc[8];
+        SIZE_T elen = 0;
+
+        switch (*p) {
+        case '\\':  esc[0] = '\\'; esc[1] = '\\'; elen = 2; break;
+        case '"':   esc[0] = '\\'; esc[1] = '"';  elen = 2; break;
+        case '\b':  esc[0] = '\\'; esc[1] = 'b';  elen = 2; break;
+        case '\f':  esc[0] = '\\'; esc[1] = 'f';  elen = 2; break;
+        case '\n':  esc[0] = '\\'; esc[1] = 'n';  elen = 2; break;
+        case '\r':  esc[0] = '\\'; esc[1] = 'r';  elen = 2; break;
+        case '\t':  esc[0] = '\\'; esc[1] = 't';  elen = 2; break;
+        default:
+            if (*p < 0x20) {
+                /* \u00XX */
+                static const CHAR hex[] = "0123456789abcdef";
+                esc[0] = '\\'; esc[1] = 'u'; esc[2] = '0'; esc[3] = '0';
+                esc[4] = hex[(*p >> 4) & 0xF];
+                esc[5] = hex[*p & 0xF];
+                elen = 6;
+            } else {
+                esc[0] = (CHAR)*p;
+                elen = 1;
+            }
+            break;
+        }
+
+        if (out + elen + 1 > DestSize)
+            return FALSE;
+        for (SIZE_T i = 0; i < elen; i++)
+            Dest[out++] = esc[i];
+    }
+    Dest[out] = '\0';
+    return TRUE;
+}
 
 static PDEVICE_OBJECT g_ComsDevice = NULL;
 static KSPIN_LOCK g_ComsLock;
@@ -144,6 +200,13 @@ static VOID ComsHandleUserCommand(_In_reads_bytes_(DataSize) const UCHAR* Data,
         break;
     }
 
+    case 14: { // clear injection targets + disable
+        InjClearTargets();
+        InjSetEnabled(FALSE);
+        KdPrint(("Peregrine: injection targets cleared and disabled\n"));
+        break;
+    }
+
     default:
         KdPrint(("Peregrine: unknown command 0x%02X\n", Data[0]));
         break;
@@ -254,20 +317,24 @@ NTSTATUS ComsDeviceControl(_In_ PDEVICE_OBJECT DeviceObject, _Inout_ PIRP Irp) {
 NTSTATUS ComsInitialize(_In_ PDRIVER_OBJECT DriverObject) {
     UNICODE_STRING deviceName = RTL_CONSTANT_STRING(PEREGRINE_DEVICE_NAME);
     UNICODE_STRING symLink = RTL_CONSTANT_STRING(PEREGRINE_SYMLINK_NAME);
+    UNICODE_STRING sddl = RTL_CONSTANT_STRING(PEREGRINE_DEVICE_SDDL);
 
     KeInitializeSpinLock(&g_ComsLock);
 
-    NTSTATUS status = IoCreateDevice(
+    /* Restrict device open to SYSTEM + Administrators (not world-writable). */
+    NTSTATUS status = IoCreateDeviceSecure(
         DriverObject,
         0,
         &deviceName,
         FILE_DEVICE_UNKNOWN,
         FILE_DEVICE_SECURE_OPEN,
         FALSE,
+        &sddl,
+        NULL,
         &g_ComsDevice);
 
     if (!NT_SUCCESS(status)) {
-        KdPrint(("Peregrine: IoCreateDevice failed 0x%X\n", status));
+        KdPrint(("Peregrine: IoCreateDeviceSecure failed 0x%X\n", status));
         return status;
     }
 

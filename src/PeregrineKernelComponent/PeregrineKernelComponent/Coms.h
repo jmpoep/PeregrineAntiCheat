@@ -17,3 +17,9 @@ VOID ComsCleanup(void);
 NTSTATUS ComsCreateClose(_In_ PDEVICE_OBJECT DeviceObject, _Inout_ PIRP Irp);
 NTSTATUS ComsDeviceControl(_In_ PDEVICE_OBJECT DeviceObject, _Inout_ PIRP Irp);
 NTSTATUS ComsSendToUser(_In_reads_bytes_(DataSize) const void* Data, _In_ ULONG DataSize);
+
+/* Escape src for a JSON string value into dest (NUL-terminated). Returns FALSE on overflow. */
+BOOLEAN JsonEscapeString(
+    _Out_writes_bytes_(DestSize) PCHAR Dest,
+    _In_ SIZE_T DestSize,
+    _In_opt_ PCSTR Src);

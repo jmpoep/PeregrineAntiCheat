@@ -25,6 +25,7 @@
     iat_hook: "#ff4444", eat_hook: "#ff4444", ppl: "#4a90e2",
     inj_fail: "#ff4444", apc_ok: "#4ec94e", apc_fail: "#ff4444",
     conn: "#4ec94e", err: "#c83c3c", info: "#6ab0f3",
+    proc: "#89b4fa", thr: "#cba6f7", overlay: "#f9e2af",
     default: "#cdd6f4",
   };
 
@@ -203,18 +204,28 @@
       for (const t of res) {
         if (t.suspicious) {
           sus++;
-          const ripMod = t.rip_module ?? "UNKNOWN";
-          const startMod = t.start_module ?? "UNKNOWN";
-          const startHex = t.start_address ? `0x${t.start_address.toString(16).toUpperCase()}` : "?";
-          addLog(`[SUSPICIOUS THREAD ${t.tid}] RIP=0x${t.rip.toString(16).toUpperCase()} (${ripMod}) Start=${startHex} (${startMod})`, "suspicious");
+          const ripMod = t.rip_module ?? "OUTSIDE_MODULES";
+          const startMod = t.start_module ?? "OUTSIDE_MODULES";
+          const startHex = t.start_address
+            ? `0x${Number(t.start_address).toString(16).toUpperCase()}`
+            : "?";
+          const ripHex = t.rip ? `0x${Number(t.rip).toString(16).toUpperCase()}` : "n/a";
+          addLog(
+            `[SUSPICIOUS THREAD ${t.tid}] RIP=${ripHex} (${ripMod}) Start=${startHex} (${startMod})`,
+            "suspicious",
+          );
         }
         if (t.dr0 || t.dr1 || t.dr2 || t.dr3) drActive++;
         if (t.dr7 && !t.dr0 && !t.dr1 && !t.dr2 && !t.dr3) {
-          addLog(`[DR TAMPER TID ${t.tid}] DR7=0x${t.dr7.toString(16).toUpperCase()} but DR0-3 cleared`, "suspicious");
+          addLog(`[DR TAMPER TID ${t.tid}] DR7=0x${Number(t.dr7).toString(16).toUpperCase()} but DR0-3 cleared`, "suspicious");
         }
       }
       const drNote = drActive > 0 ? `, ${drActive} with HW breakpoints` : "";
-      addLog(`[Thread Scan] ${res.length} threads, ${sus} suspicious${drNote}`, "info");
+      if (res.length === 0) {
+        addLog(`[Thread Scan] 0 threads for PID ${pid} — process gone or Toolhelp/OpenThread failed (see console)`, "err");
+      } else {
+        addLog(`[Thread Scan] ${res.length} threads, ${sus} suspicious${drNote}`, sus > 0 ? "suspicious" : "info");
+      }
     } catch (e: any) { addLog(`thread scan failed: ${e}`, "err"); }
   }
 
@@ -314,6 +325,32 @@
     }
   }
 
+  async function scanOverlays() {
+    addLog("[Overlay] Scanning top-level windows...", "info");
+    try {
+      const hits: any[] = await invoke("scan_overlays");
+      if (!hits.length) {
+        addLog("[Overlay] No layered/transparent/topmost-fullscreen windows", "ok");
+        return;
+      }
+      for (const o of hits) {
+        const flags = [
+          o.layered ? "LAYERED" : null,
+          o.transparent ? "TRANSPARENT" : null,
+          o.topmost ? "TOPMOST" : null,
+          o.near_fullscreen ? "FULLSCREEN" : null,
+        ].filter(Boolean).join("|");
+        addLog(
+          `[Overlay] PID=${o.pid} hwnd=0x${Number(o.hwnd).toString(16)} [${flags}] class="${o.class_name}" title="${o.title || ""}"`,
+          "overlay",
+        );
+      }
+      addLog(`[Overlay] ${hits.length} candidate window(s)`, "overlay");
+    } catch (e: any) {
+      addLog(`[Overlay] failed: ${e}`, "err");
+    }
+  }
+
   async function driverCmd(name: string) {
     if (!requireDriver()) return;
     try {
@@ -332,25 +369,56 @@
   };
   const DANGEROUS = 0x0001 | 0x0002 | 0x0008 | 0x0010 | 0x0020 | 0x0040 | 0x0800;
 
+  // Rate-limit image_load log spam (non-system paths preferred later; simple cap for now)
+  let imageLoadBudget = 40;
+  let imageLoadWindowStart = 0;
+
   function handleDriverEvent(d: any) {
     if (!d) return;
     const event = d.event ?? "";
 
     switch (event) {
       case "process_create":
+        // Not logged — system-wide creates are pure noise.
+        break;
+
       case "process_exit":
-      case "thread_create":
+        // Silent: drop PID from UI protected list only (kernel already cleaned up).
+        if (typeof d.pid === "number") {
+          protectedPids = protectedPids.filter((p) => p !== d.pid);
+        }
+        break;
+
+      case "thread_create": {
+        const sa = d.start_address ? ` start=${d.start_address}` : "";
+        addLog(`[Thread] create PID=${d.pid} TID=${d.tid}${sa}`, "thr");
+        break;
+      }
+
       case "thread_exit":
+        // Dropped in Rust poll path; keep empty if anything slips through
         break;
 
       case "file_access":
         addLog(`[File Access] PID=${d.pid} op=${d.op} ${d.path}`, "handle");
         break;
 
-
-      case "image_load":
-        addLog(`[Image Load] PID=${d.pid} ${d.image ?? "?"}`, "imgload");
+      case "image_load": {
+        const nowMs = Date.now();
+        if (nowMs - imageLoadWindowStart > 1000) {
+          imageLoadWindowStart = nowMs;
+          imageLoadBudget = 40;
+        }
+        const img = String(d.image ?? "");
+        const isSystem =
+          /\\windows\\/i.test(img) ||
+          /\\system32\\/i.test(img) ||
+          /\\syswow64\\/i.test(img);
+        if (isSystem && imageLoadBudget <= 0) break;
+        if (imageLoadBudget > 0) imageLoadBudget--;
+        addLog(`[Image Load] PID=${d.pid} ${img || "?"}`, "imgload");
         break;
+      }
 
       case "ob_callback": {
         const raw = d.desired_access ?? "0x0";
@@ -368,7 +436,13 @@
       case "apc_inject":
         if (d.status === "success") {
           addLog(`[ok] APC injection PID=${d.pid} TID=${d.tid}`, "apc_ok");
-          protectedPids = [...protectedPids, d.pid];
+          if (typeof d.pid === "number" && !protectedPids.includes(d.pid)) {
+            protectedPids = [...protectedPids, d.pid];
+          }
+          // Keep UI list in sync with kernel; kernel already StateAddPid on success.
+          void invoke("add_pid", { pid: d.pid }).catch(() => {
+            /* kernel may already own the PID */
+          });
         } else {
           addLog(`[DLL Inject FAIL] APC injection PID=${d.pid} error=${d.error}`, "apc_fail");
         }
@@ -577,6 +651,7 @@
     <button class="btn purple" onclick={() => driverCmd("system_check")}>SysChk</button>
     <button class="btn" style="background:#e74c3c;color:white" onclick={startEtwTi}>ETW-TI</button>
     <button class="btn" style="background:#10b981;color:white" onclick={collectHwid}>HWID</button>
+    <button class="btn" style="background:#f9e2af;color:black" onclick={scanOverlays}>Overlay</button>
   </nav>
 
   <div class="log" bind:this={logEl}>

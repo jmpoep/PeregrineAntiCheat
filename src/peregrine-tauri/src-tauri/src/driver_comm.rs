@@ -241,6 +241,11 @@ impl DriverHandle {
         self.send_command(&buf)
     }
 
+    /// Clear injection target names and disable injection (IOCTL cmd 14).
+    pub fn clear_injection_targets(&self) -> Result<(), String> {
+        self.send_command(&[14])
+    }
+
 }
 
 impl Drop for DriverHandle {
@@ -255,6 +260,5 @@ pub type SharedDriver = Arc<Mutex<Option<DriverHandle>>>;
 
 pub fn parse_driver_event(raw: &[u8]) -> Option<DriverEvent> {
     let s = String::from_utf8_lossy(raw);
-    let fixed = s.replace('\\', "\\\\");
-    serde_json::from_str(&fixed).ok()
+    serde_json::from_str(&s).ok()
 }

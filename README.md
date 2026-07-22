@@ -12,7 +12,7 @@ An educational anti-cheat system demonstrating Windows kernel programming, proce
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │  Tauri GUI (Rust + Svelte)                                  │
-│  peregrine-tauri.exe                                        │
+│  peregrine-tauri.exe  (run elevated)                        │
 │  ┌──────────┐ ┌──────────┐ ┌───────────┐ ┌──────────────┐   │
 │  │ Driver   │ │ IPC Pipe │ │ Detection │ │ ETW-TI       │   │
 │  │ Polling  │ │ Server   │ │ Scans     │ │ Consumer     │   │
@@ -24,13 +24,13 @@ An educational anti-cheat system demonstrating Windows kernel programming, proce
 │  │  Kernel Driver (Minifilter)                         │    │
 │  │  PeregrineKernelComponent.sys                       │    │
 │  │  • ObCallback (handle monitoring)                   │    │
-│  │  • Process/Thread/Image notify routines             │    │
-│  │  • APC DLL injection (shellcode + LdrLoadDll)       │    │
+│  │  • Thread/Image notify (protected PIDs)             │    │
+│  │  • APC DLL injection + auto StateAddPid             │    │
 │  │  • PPL elevation (EPROCESS patch)                   │    │
-│  │  • Minifilter (file access monitoring)              │    │
+│  │  • Minifilter (report + deny AC file tamper)        │    │
 │  │  • Driver/ObCallback scanning                       │    │
 │  │  • HWID collection (disk serial, boot GUID)         │    │
-│  │  • VAD scan (executable private memory detection)   │    │
+│  │  • VAD scan (executable private memory)             │    │
 │  └─────────┬───────────────────────────────────────────┘    │
 │            │ APC Injection                                  │
 │            ▼                                                │
@@ -43,21 +43,22 @@ An educational anti-cheat system demonstrating Windows kernel programming, proce
 │  │  • VirtualAlloc/Prot │      │  WriteProcessMemory │      │
 │  │  • CreateRemoteThread│      │  VirtualAllocEx ... │      │
 │  │  • OpenProcess       │      │                     │      │
+│  │  • HWBP / VEH watch  │      │                     │      │
 │  └──────────────────────┘      └─────────────────────┘      │
 └─────────────────────────────────────────────────────────────┘
 ```
 
 | Component | Language | Role |
 |-----------|----------|------|
-| **Kernel Driver** | C (Minifilter) | Ring-0: ObCallbacks, APC injection, PPL, notify routines, file access monitoring, driver scanning, HWID collection |
-| **Injection DLL** | C++ (MinHook) | Injected into targets: hooks WinAPI calls, reports via named pipe IPC |
-| **Tauri GUI** | Rust + Svelte | Userland: IOCTL commands, IPC receiver, detection scans, ETW-TI consumer, HWID fingerprinting, dark-themed UI |
+| **Kernel Driver** | C (Minifilter) | Ring-0: ObCallbacks, APC injection, PPL, notify routines, file defense, driver scanning, HWID, VAD |
+| **Injection DLL** | C++ (MinHook) | Injected into targets: hooks WinAPI, HWBP/VEH, reports via named pipe IPC |
+| **Tauri GUI** | Rust + Svelte | Userland: IOCTL commands, IPC receiver, detection scans, ETW-TI consumer, HWID, dark UI |
 
 **Communication flows:**
-- **GUI ↔ Driver**: IOCTL commands (add PIDs, configure injection, trigger scans) + event polling
-- **DLL → GUI**: Named pipe `\\.\pipe\peregrine_ipc` (hook events, hello message)
-- **Driver → DLL**: APC injection at kernel32.dll load time (autonomous, no userland roundtrip)
-- **GUI → ETW**: PPL-protected trace session consuming kernel Threat Intelligence events
+- **GUI ↔ Driver**: IOCTL commands (PIDs, injection config, scans) + event polling
+- **DLL → GUI**: Named pipe `\\.\pipe\peregrine_ipc` (hook events, `hello`, HWBP)
+- **Driver → target**: APC injection at `kernel32.dll` load (no userland roundtrip); on success the kernel auto-protects the PID
+- **GUI → ETW**: PPL-protected trace session for Threat Intelligence events
 
 ## Detection Capabilities
 
@@ -66,38 +67,58 @@ An educational anti-cheat system demonstrating Windows kernel programming, proce
 | 1 | **Module Integrity** | `.text` section SHA-256: disk vs memory, relocation-aware |
 | 2 | **IAT/EAT Hook Detection** | PE import/export table scanning for entries outside known modules |
 | 3 | **External Memory Access** | DLL hooks on RPM/WPM/NtRead/NtWrite/VirtualAllocEx/VirtualProtectEx/CreateRemoteThread/OpenProcess |
-| 3b | **Call Stack Validation** | `RtlCaptureStackBackTrace` on hooked APIs — flags callers in `MEM_PRIVATE` executable memory (manual-mapped DLLs, shellcode) with cached module ranges and per-hook rate limiting |
-| 4 | **Thread & Shellcode Detection** | RIP + Win32 start address checked against loaded module ranges |
+| 3b | **Call Stack Validation** | `RtlCaptureStackBackTrace` on hooked APIs — flags callers in `MEM_PRIVATE` executable memory |
+| 4 | **Thread & Shellcode Detection** | Kernel `thread_create` (start address) + userland scan: suspend → `GetThreadContext` → RIP/start vs modules |
 | 5 | **Handle Access Monitoring** | Kernel ObCallback on handle create/duplicate with dangerous access flags |
 | 6 | **Process Blacklist** | Keyword scan against running process paths |
 | 7 | **Driver Blacklist** | Ring-0 enumeration of loaded kernel drivers |
 | 8 | **ObCallback Enumeration** | Ring-0 scan of registered object callbacks |
-| 9 | **Manual-Map Detection** | VAD walking for executable regions without backing modules |
-| 10 | **Overlay Detection** | EnumWindows for layered/transparent/topmost fullscreen windows |
+| 9 | **Manual-Map / VAD** | Kernel `ZwQueryVirtualMemory` walk — executable private regions |
+| 10 | **Overlay Detection** | `EnumWindows` for layered / transparent / topmost+near-fullscreen windows |
 | 11 | **System Integrity** | Test-signing, HVCI, CPU vendor/hypervisor detection |
-| 12 | **ETW Threat Intelligence** | PPL-protected consumer for ALLOCVM/PROTECTVM/MAPVIEW/QUEUEAPC/SETTHREADCONTEXT/READVM/WRITEVM remote events |
-| 13 | **File Access Monitoring** | Minifilter reports write/delete/rename on protected AC files |
-| 14 | **HWID Collection** | Hybrid kernel+userland hardware fingerprinting (disk serials, boot GUID, MAC, SMBIOS UUID, volume serials, registry IDs) |
-| 15 | **VAD Scan (Manual-Map Detection)** | Kernel-mode virtual address space walk via ZwQueryVirtualMemory — flags executable private memory with no image backing |
-| 16 | **YARA Memory Scanning** | Full YARA rule engine (yara-x) scanning process address space — hex patterns, strings, wildcards, conditions, loaded from `rules.yar` |
+| 12 | **ETW Threat Intelligence** | PPL consumer for remote ALLOCVM/PROTECTVM/MAPVIEW/QUEUEAPC/SETTHREADCONTEXT/READVM/WRITEVM |
+| 13 | **File Self-Defense** | Minifilter reports **and denies** write/delete/rename on AC artifacts under `\peregrine\` |
+| 14 | **HWID Collection** | Hybrid kernel+userland fingerprinting |
+| 15 | **YARA Memory Scanning** | yara-x over process address space (`rules.yar`) |
+| 16 | **HWBP / VEH Protection** | DLL arms DR0 on VEH list; watchdog re-arms cleared DRs |
 
 ## Kernel APC DLL Injection
 
-The driver autonomously injects DLLs via kernel APC queuing:
-1. Userland configures target process names + DLL paths via IOCTL
-2. Driver matches image names on process creation
-3. At `kernel32.dll` load time, resolves `LdrLoadDll` from ntdll exports
-4. Writes shellcode + UNICODE_STRING into target, queues user-mode APC
-5. Supports x64 native + x86 WoW64 (`PsWrapApcWow64Thread`)
+1. GUI sets DLL paths (`PeregrineDLL_x64.dll` / `PeregrineDLL_x86.dll`) and target names via IOCTL  
+2. Driver matches on process create, injects when `kernel32.dll` loads  
+3. Staging memory is **RW → RX** (not long-lived RWX); freed on process exit  
+4. On inject **success**, kernel calls `StateAddPid` so ObCallback / thread / image notifies apply immediately  
+5. x64 + x86 WoW64 (`PsWrapApcWow64Thread`)
+
+**IOCTL notes:** command `14` clears injection targets and disables injection (not just disable).
+
+## Security model (educational)
+
+| Surface | Policy |
+|---------|--------|
+| Device `\\.\Peregrine` | `IoCreateDeviceSecure` — **SYSTEM + Administrators** only |
+| IPC pipe | SYSTEM + Administrators full; **Authenticated Users** write (injected medium-IL games can still send events). Not world-writable. |
+| GUI | Must run **elevated** |
+| Kernel JSON | Paths escaped in-kernel (`JsonEscapeString`); no userland `\` massaging |
 
 ## Building
 
 ```batch
-build_dll.bat                     # builds DLLs + driver, copies to C:\Peregrine\
-cd src\peregrine-tauri && npx tauri build   # builds Tauri GUI (~9 MB)
+build_dll.bat                     # DLLs + driver → src\Userland\ and C:\Peregrine\
+cd src\peregrine-tauri && npx tauri build
 ```
 
 **Requirements:** Windows 10/11 x64, VS2022 + WDK, Rust 1.70+, Node.js 18+, test signing enabled
+
+**Deploy layout (typical VM):**
+```
+C:\Peregrine\
+  PeregrineKernelComponent.sys
+  PeregrineDLL_x64.dll
+  PeregrineDLL_x86.dll
+  peregrine-tauri.exe
+  rules.yar
+```
 
 ## Usage
 
@@ -110,23 +131,29 @@ sc.exe start Peregrine
 C:\Peregrine\peregrine-tauri.exe
 ```
 
+1. Connect (auto-finds DLLs under `C:\Peregrine` or next to the EXE)  
+2. Add injection target e.g. `game.exe` → start the game → expect `apc_inject` + `[ok] DLL injected…`  
+3. Game PID is protected without a manual Add PID  
+4. Run cheats / scans (Threads, VAD, Overlay, ETW-TI, …)
+
 ## Test Suite
 
-Purpose-built cheats in `test/` that showcase every detection layer:
+Purpose-built tools in `test/`:
 
 | Cheat | Technique | Detected by |
 |-------|-----------|-------------|
-| `cheat.exe <PID> <addr>` | RPM/WPM every 5s | DLL Hooks, ETW-TI (`WRITEVM_REMOTE`), ObCallback |
-| `cheat_inject.exe <PID> payload.dll` | CreateRemoteThread + LoadLibrary | ObCallback, DLL Hooks, ETW-TI (`ALLOCVM_REMOTE`) |
-| `cheat_shellcode.exe <PID>` | VirtualAllocEx RWX + remote thread | ObCallback, ETW-TI (`PROTECTVM_REMOTE`), Thread Scan (start addr outside modules) |
-| `cheat_patch.exe <PID>` | NOP bytes in kernel32 .text | Module Integrity (`[tamper]`), ETW-TI (`WRITEVM_REMOTE`) |
-| `cheat_manualmap.exe <PID>` | VirtualAllocEx + fake PE + remote thread | VAD Scan (executable private memory, PE header detected) |
-| `cheat_manualmap.exe <PID> --no-header` | Same but erases PE header | VAD Scan (executable private memory, no PE header) |
-| `cheat_yara.exe <PID>` | Injects marker strings + cheat config blob | YARA Scan (`PeregrineTestCheat` rule) |
-| `cheat_callstack.exe <PID>` | Calls OpenProcess from VirtualAlloc'd RWX page | Call Stack Validation (`CallstackAnomaly`) |
-| `CheatEngine.exe` | Just existing | Blacklist Scan |
+| `cheat.exe <PID> <addr>` | RPM/WPM | DLL hooks, ETW-TI, ObCallback |
+| `cheat_inject.exe <PID> payload.dll` | Remote LoadLibrary | ObCallback, hooks, ETW-TI |
+| `cheat_shellcode.exe <PID>` | RWX private + remote thread (CFG-safe spin loop) | Thread scan, VAD, ETW-TI, ObCallback |
+| `cheat_patch.exe <PID>` | NOP in kernel32 `.text` | Module integrity, ETW-TI |
+| `cheat_manualmap.exe <PID>` | Private exec ± PE header | VAD |
+| `cheat_yara.exe <PID>` | Marker strings / blob | YARA |
+| `cheat_callstack.exe <PID>` | OpenProcess from private RWX | Callstack anomaly |
+| `CheatEngine.exe` | Exists | Blacklist |
 
-Start `game.exe` first — it prints its PID and a health variable address for the cheats to target.
+Start `game.exe` first — it prints PID and a health address.
+
+**Note:** Older shellcode demos that `call Sleep` from private memory can **CFG FastFail** the whole target process. The current `cheat_shellcode` uses a no-API spin loop so the game stays alive for Thread/VAD checks.
 
 ## Components
 
@@ -135,12 +162,12 @@ src/
 ├── PeregrineKernelComponent/    # Kernel minifilter driver (ring-0)
 ├── PeregrineDLL/                # Injected API hook DLL (x86 + x64)
 └── peregrine-tauri/             # Rust/Tauri desktop GUI
-test/                            # Cheat test tools (game.exe, cheat_*.exe)
+test/                            # Cheat test tools
 ```
 
 ## Blog Posts
 
-This project has an accompanying blog series on [patchi.fyi](https://patchi.fyi):
+Accompanying series on [patchi.fyi](https://patchi.fyi):
 
 - [Anatomy of an Anti-Cheat](https://patchi.fyi/blog/peregrine-anatomy-of-an-anticheat/)
 - [ObCallbacks](https://patchi.fyi/blog/peregrine-obcallbacks/)

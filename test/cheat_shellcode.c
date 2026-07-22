@@ -5,16 +5,18 @@
 /* Shellcode injection: alloc RWX, write shellcode, create remote thread.
    Triggers: VirtualAllocEx hook, VirtualProtectEx hook, WriteProcessMemory hook,
    CreateRemoteThread hook, Thread RIP scan (suspicious - outside modules),
-   ETW-TI (ALLOCVM_REMOTE, PROTECTVM_REMOTE, WRITEVM_REMOTE) */
+   ETW-TI (ALLOCVM_REMOTE, PROTECTVM_REMOTE, WRITEVM_REMOTE)
 
-/* x64 shellcode: infinite sleep loop (simulates a persistent cheat thread).
-   Thread RIP will always be inside this shellcode = outside any known module. */
+   IMPORTANT: Do NOT call kernel32 APIs (e.g. Sleep) from private RWX memory.
+   Processes built with CFG (/guard:cf, VS default) FastFail the whole process
+   on an indirect call whose origin is not a valid image. That looks like
+   "cheat_shellcode killed the game" without pressing Enter. */
+
+/* x64: infinite loop, RIP always inside this private page.
+   pause reduces CPU burn a bit; no external calls = CFG-safe. */
 static const unsigned char shellcode[] = {
-    0x48, 0x83, 0xEC, 0x28,                /* sub rsp, 0x28         */
-    0xB9, 0xE8, 0x03, 0x00, 0x00,          /* mov ecx, 1000         */
-    0xFF, 0x15, 0x02, 0x00, 0x00, 0x00,    /* call [rip+2]          */
-    0xEB, 0xF3,                             /* jmp back to mov ecx   */
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00  /* Sleep addr (patched) */
+    0xF3, 0x90,                         /* pause              */
+    0xEB, 0xFC,                         /* jmp $-2 (to pause) */
 };
 
 int main(int argc, char* argv[])
@@ -29,7 +31,7 @@ int main(int argc, char* argv[])
 
     HANDLE hProc = OpenProcess(
         PROCESS_CREATE_THREAD | PROCESS_VM_OPERATION |
-        PROCESS_VM_READ | PROCESS_VM_WRITE,
+        PROCESS_VM_READ | PROCESS_VM_WRITE | SYNCHRONIZE,
         FALSE, pid);
 
     if (!hProc) {
@@ -38,7 +40,6 @@ int main(int argc, char* argv[])
     }
     printf("[SHELLCODE] Handle acquired\n");
 
-    /* Step 1: Allocate RW memory */
     LPVOID remoteMem = VirtualAllocEx(hProc, NULL, 4096,
         MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
 
@@ -49,25 +50,24 @@ int main(int argc, char* argv[])
     }
     printf("[SHELLCODE] Allocated RW page at 0x%p\n", remoteMem);
 
-    /* Step 2: Write shellcode with patched Sleep address */
-    unsigned char sc[sizeof(shellcode)];
-    memcpy(sc, shellcode, sizeof(sc));
-
-    /* Patch Sleep() address at offset 17 (the qword after jmp) */
-    FARPROC pSleep = GetProcAddress(GetModuleHandleA("kernel32.dll"), "Sleep");
-    *(ULONGLONG*)(sc + 17) = (ULONGLONG)pSleep;
-
     SIZE_T written = 0;
-    WriteProcessMemory(hProc, remoteMem, sc, sizeof(sc), &written);
-    printf("[SHELLCODE] Wrote %zu bytes of shellcode (Sleep=0x%llX)\n",
-        written, (unsigned long long)pSleep);
+    if (!WriteProcessMemory(hProc, remoteMem, shellcode, sizeof(shellcode), &written)) {
+        printf("[SHELLCODE] WriteProcessMemory failed: %lu\n", GetLastError());
+        VirtualFreeEx(hProc, remoteMem, 0, MEM_RELEASE);
+        CloseHandle(hProc);
+        return 1;
+    }
+    printf("[SHELLCODE] Wrote %zu bytes of shellcode (CFG-safe spin loop)\n", written);
 
-    /* Step 3: Change to RWX (triggers VirtualProtectEx hook) */
     DWORD oldProtect = 0;
-    VirtualProtectEx(hProc, remoteMem, 4096, PAGE_EXECUTE_READWRITE, &oldProtect);
+    if (!VirtualProtectEx(hProc, remoteMem, 4096, PAGE_EXECUTE_READWRITE, &oldProtect)) {
+        printf("[SHELLCODE] VirtualProtectEx failed: %lu\n", GetLastError());
+        VirtualFreeEx(hProc, remoteMem, 0, MEM_RELEASE);
+        CloseHandle(hProc);
+        return 1;
+    }
     printf("[SHELLCODE] Changed protection to RWX\n");
 
-    /* Step 4: Create remote thread pointing to shellcode */
     HANDLE hThread = CreateRemoteThread(hProc, NULL, 0,
         (LPTHREAD_START_ROUTINE)remoteMem, NULL, 0, NULL);
 
@@ -79,8 +79,21 @@ int main(int argc, char* argv[])
     }
     printf("[SHELLCODE] Remote thread created at 0x%p\n", remoteMem);
 
-    printf("[SHELLCODE] Remote thread running at 0x%p (sleeping loop)\n", remoteMem);
-    printf("[SHELLCODE] Run 'Check Threads' in Peregrine to detect suspicious RIP.\n");
+    /* Detect immediate death (CFG FastFail, bad shellcode, etc.) */
+    DWORD wait = WaitForSingleObject(hProc, 500);
+    if (wait == WAIT_OBJECT_0) {
+        DWORD code = 0;
+        GetExitCodeProcess(hProc, &code);
+        printf("[SHELLCODE] ERROR: target process exited within 500ms (code=%lu).\n", code);
+        printf("[SHELLCODE] Likely CFG/crash — game is gone.\n");
+        CloseHandle(hThread);
+        CloseHandle(hProc);
+        return 1;
+    }
+
+    printf("[SHELLCODE] Remote thread running at 0x%p (spin loop, no API calls)\n", remoteMem);
+    printf("[SHELLCODE] Target still alive after 500ms.\n");
+    printf("[SHELLCODE] Run 'Threads' in Peregrine — expect suspicious start/RIP at 0x%p\n", remoteMem);
     printf("[SHELLCODE] Press Enter to cleanup and exit.\n");
     getchar();
 

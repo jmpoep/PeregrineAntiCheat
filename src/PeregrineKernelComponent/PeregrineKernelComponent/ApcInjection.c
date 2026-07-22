@@ -1,6 +1,15 @@
 #include "ApcInjection.h"
 #include "Coms.h"
+#include "AppState.h"
 #include <ntstrsafe.h>
+
+/* ZwProtectVirtualMemory is not always declared in KM headers */
+NTSYSAPI NTSTATUS NTAPI ZwProtectVirtualMemory(
+    _In_ HANDLE ProcessHandle,
+    _Inout_ PVOID* BaseAddress,
+    _Inout_ PSIZE_T RegionSize,
+    _In_ ULONG NewProtect,
+    _Out_ PULONG OldProtect);
 
 /* ------------------------------------------------------------------ */
 /*  Undocumented kernel API forward declarations                      */
@@ -107,9 +116,80 @@ typedef struct _INJ_STATE {
 
     HANDLE Pending[INJ_MAX_PENDING];
     ULONG  PendingCount;
+
+    /* Allocations to free after LdrLoadDll / DLL image load */
+    struct {
+        HANDLE Pid;
+        PVOID  Base;
+        SIZE_T Size;
+    } PendingFree[INJ_MAX_PENDING];
+    ULONG PendingFreeCount;
 } INJ_STATE;
 
 static INJ_STATE g_Inj = { 0 };
+
+static VOID PendingFreeAdd(HANDLE Pid, PVOID Base, SIZE_T Size)
+{
+    KIRQL irql;
+    KeAcquireSpinLock(&g_Inj.Lock, &irql);
+    if (g_Inj.PendingFreeCount < INJ_MAX_PENDING && Base != NULL) {
+        ULONG i = g_Inj.PendingFreeCount++;
+        g_Inj.PendingFree[i].Pid  = Pid;
+        g_Inj.PendingFree[i].Base = Base;
+        g_Inj.PendingFree[i].Size = Size;
+    }
+    KeReleaseSpinLock(&g_Inj.Lock, irql);
+}
+
+/* Free inject staging memory once our DLL image is mapped (or on process exit). */
+static VOID PendingFreeRelease(_In_ HANDLE Pid, _In_ BOOLEAN AttachIfNeeded)
+{
+    PVOID bases[INJ_MAX_PENDING];
+    SIZE_T sizes[INJ_MAX_PENDING];
+    ULONG n = 0;
+    KIRQL irql;
+
+    KeAcquireSpinLock(&g_Inj.Lock, &irql);
+    for (ULONG i = 0; i < g_Inj.PendingFreeCount; ) {
+        if (g_Inj.PendingFree[i].Pid == Pid) {
+            if (n < INJ_MAX_PENDING) {
+                bases[n] = g_Inj.PendingFree[i].Base;
+                sizes[n] = g_Inj.PendingFree[i].Size;
+                n++;
+            }
+            g_Inj.PendingFree[i] = g_Inj.PendingFree[--g_Inj.PendingFreeCount];
+        } else {
+            i++;
+        }
+    }
+    KeReleaseSpinLock(&g_Inj.Lock, irql);
+
+    if (n == 0) return;
+
+    PEPROCESS process = NULL;
+    KAPC_STATE apc;
+    BOOLEAN attached = FALSE;
+
+    if (AttachIfNeeded && PsGetCurrentProcessId() != Pid) {
+        if (NT_SUCCESS(PsLookupProcessByProcessId(Pid, &process))) {
+            KeStackAttachProcess(process, &apc);
+            attached = TRUE;
+        } else {
+            return; /* process gone — memory already reclaimed */
+        }
+    }
+
+    for (ULONG i = 0; i < n; i++) {
+        PVOID base = bases[i];
+        SIZE_T region = 0;
+        ZwFreeVirtualMemory(ZwCurrentProcess(), &base, &region, MEM_RELEASE);
+    }
+
+    if (attached) {
+        KeUnstackDetachProcess(&apc);
+        ObDereferenceObject(process);
+    }
+}
 
 /* Cached ntdll bases & LdrLoadDll addresses (set once per boot) */
 static volatile LONG_PTR g_NtdllBaseX64   = 0;
@@ -135,6 +215,15 @@ static BOOLEAN UStrEndsWith(_In_ PCUNICODE_STRING Str, _In_ PCWSTR Suffix)
         if (a != b) return FALSE;
     }
     return TRUE;
+}
+
+static BOOLEAN IsOurInjectedDllName(_In_ PUNICODE_STRING FullImageName)
+{
+    if (!FullImageName) return FALSE;
+    return UStrEndsWith(FullImageName, L"peregrinedll_x64.dll")
+        || UStrEndsWith(FullImageName, L"peregrinedll_x86.dll")
+        || UStrEndsWith(FullImageName, L"peregrine64.dll")
+        || UStrEndsWith(FullImageName, L"peregrine32.dll");
 }
 
 static BOOLEAN UStrContainsI(_In_ PCUNICODE_STRING Str, _In_ PCWSTR Sub)
@@ -345,9 +434,9 @@ static NTSTATUS DoInjectInContext(_In_ BOOLEAN IsWow64)
     ULONG total = scSz + ustrSz + dllBytes + sizeof(WCHAR);
     allocSz = total;
 
-    /* Allocate in current (target) process — no attach needed */
+    /* Allocate RW first — never leave long-lived PAGE_EXECUTE_READWRITE. */
     status = ZwAllocateVirtualMemory(ZwCurrentProcess(), &alloc, 0,
-        &allocSz, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+        &allocSz, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
     if (!NT_SUCCESS(status)) return status;
 
     PUCHAR dst = (PUCHAR)alloc;
@@ -377,12 +466,31 @@ static NTSTATUS DoInjectInContext(_In_ BOOLEAN IsWow64)
         *(PULONG_PTR)(ustrA + 8) = (ULONG_PTR)pathA;
     }
 
+    /* Shellcode + path must stay readable; path does not need execute. */
+    {
+        PVOID protBase = alloc;
+        SIZE_T protSize = scSz;
+        ULONG oldProt = 0;
+        status = ZwProtectVirtualMemory(ZwCurrentProcess(), &protBase, &protSize,
+            PAGE_EXECUTE_READ, &oldProt);
+        if (!NT_SUCCESS(status)) {
+            SIZE_T freeSz = 0;
+            ZwFreeVirtualMemory(ZwCurrentProcess(), &alloc, &freeSz, MEM_RELEASE);
+            return status;
+        }
+        /* Rest of region (UNICODE_STRING + path) remains PAGE_READWRITE from alloc. */
+    }
+
     /* Queue user-mode APC to current thread (the loader thread) */
     PRKTHREAD curThread = (PRKTHREAD)PsGetCurrentThread();
 
     PRKAPC execApc = (PRKAPC)ExAllocatePool2(
         POOL_FLAG_NON_PAGED, sizeof(KAPC), INJ_POOL_TAG);
-    if (!execApc) return STATUS_INSUFFICIENT_RESOURCES;
+    if (!execApc) {
+        SIZE_T freeSz = 0;
+        ZwFreeVirtualMemory(ZwCurrentProcess(), &alloc, &freeSz, MEM_RELEASE);
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
 
     KeInitializeApc(execApc, curThread, OriginalApcEnvironment,
         (PKKERNEL_ROUTINE)KernelRoutineCb, (PKRUNDOWN_ROUTINE)RundownCb,
@@ -390,12 +498,19 @@ static NTSTATUS DoInjectInContext(_In_ BOOLEAN IsWow64)
 
     if (!KeInsertQueueApc(execApc, NULL, NULL, 0)) {
         ExFreePoolWithTag(execApc, INJ_POOL_TAG);
+        {
+            SIZE_T freeSz = 0;
+            ZwFreeVirtualMemory(ZwCurrentProcess(), &alloc, &freeSz, MEM_RELEASE);
+        }
         return STATUS_UNSUCCESSFUL;
     }
 
     /* Force APC delivery on next kernel-to-user transition.
        We're in the loader thread context so this is safe. */
     KeTestAlertThread(UserMode);
+
+    /* Free staging memory after our DLL maps (see InjOnImageLoad). */
+    PendingFreeAdd(PsGetCurrentProcessId(), alloc, allocSz);
 
     return STATUS_SUCCESS;
 }
@@ -463,6 +578,7 @@ NTSTATUS InjClearTargets(VOID)
     KeAcquireSpinLock(&g_Inj.Lock, &irql);
     g_Inj.TargetCount  = 0;
     g_Inj.PendingCount = 0;
+    /* Leave PendingFree entries — still need to free if inject already ran. */
     KeReleaseSpinLock(&g_Inj.Lock, irql);
     return STATUS_SUCCESS;
 }
@@ -499,6 +615,11 @@ VOID InjOnImageLoad(HANDLE ProcessId, PUNICODE_STRING FullImageName,
         return;
     }
 
+    /* Do NOT free the inject staging buffer when our DLL image maps.
+       LoadImageNotify runs inside LdrLoadDll while it still uses the
+       UNICODE_STRING / path in that allocation — freeing here kills the process.
+       Buffer is PAGE_EXECUTE_READ (not RWX); freed on process exit only. */
+
     /* Trigger injection when kernel32.dll loads in a pending process.
        At this point the loader is initialized and LdrLoadDll works.
        The callback runs in the target process's loader thread context. */
@@ -514,6 +635,8 @@ VOID InjOnImageLoad(HANDLE ProcessId, PUNICODE_STRING FullImageName,
     CHAR json[COMS_MAX_MESSAGE_SIZE];
     ULONG tid = (ULONG)(ULONG_PTR)PsGetCurrentThreadId();
     if (NT_SUCCESS(st)) {
+        /* Kernel is source of truth for ObCallback / notify filtering. */
+        StateAddPid(ProcessId);
         RtlStringCchPrintfA(json, ARRAYSIZE(json),
             "{ \"event\": \"apc_inject\", \"pid\": %lu, \"tid\": %lu, "
             "\"status\": \"success\" }",
@@ -556,7 +679,12 @@ VOID InjOnProcessCreate(HANDLE ProcessId, PPS_CREATE_NOTIFY_INFO CreateInfo)
     }
 }
 
-VOID InjOnProcessExit(HANDLE ProcessId) { PendingRemove(ProcessId); }
+VOID InjOnProcessExit(HANDLE ProcessId)
+{
+    PendingRemove(ProcessId);
+    PendingFreeRelease(ProcessId, TRUE);
+    StateRemovePid(ProcessId);
+}
 
 BOOLEAN InjOnThreadCreate(HANDLE ProcessId, HANDLE ThreadId)
 {

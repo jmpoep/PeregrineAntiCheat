@@ -122,13 +122,20 @@ NTSTATUS DriverScanEnumerate(void) {
 
         // Only send individual entries for blacklisted drivers to avoid flooding
         if (blacklisted) {
+            CHAR escName[128];
+            CHAR escPath[520];
+            if (!JsonEscapeString(escName, sizeof(escName), fileName))
+                escName[0] = '\0';
+            if (!JsonEscapeString(escPath, sizeof(escPath), fullPath))
+                escPath[0] = '\0';
+
             CHAR json[COMS_MAX_MESSAGE_SIZE];
             RtlStringCchPrintfA(
                 json,
                 ARRAYSIZE(json),
                 "{ \"event\": \"driver_scan\", \"driver\": \"%s\", \"path\": \"%s\", \"base\": \"0x%p\", \"size\": %lu, \"blacklisted\": true }",
-                fileName,
-                fullPath,
+                escName,
+                escPath,
                 mod->ImageBase,
                 mod->ImageSize);
             ComsSendToUser(json, (ULONG)strlen(json));

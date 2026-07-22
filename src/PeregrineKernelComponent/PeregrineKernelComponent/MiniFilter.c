@@ -61,9 +61,14 @@ static BOOLEAN IsProtectedFile(_In_ PCUNICODE_STRING Path)
 
     if (EndsWithI(Path, L"peregrinekernelcomponent.sys", 27)) return TRUE;
     if (EndsWithI(Path, L"peregrinekernelcomponent.inf", 27)) return TRUE;
+    /* Real install names from build_dll.bat / Userland deploy */
+    if (EndsWithI(Path, L"peregrinedll_x64.dll", 20)) return TRUE;
+    if (EndsWithI(Path, L"peregrinedll_x86.dll", 20)) return TRUE;
+    /* Legacy / alternate names still used by connect_driver search */
     if (EndsWithI(Path, L"peregrine64.dll", 15)) return TRUE;
     if (EndsWithI(Path, L"peregrine32.dll", 15)) return TRUE;
     if (EndsWithI(Path, L"peregrine-tauri.exe", 19)) return TRUE;
+    if (EndsWithI(Path, L"rules.yar", 9)) return TRUE;
 
     return FALSE;
 }
@@ -117,13 +122,21 @@ PreCreate(
             CHAR json[COMS_MAX_MESSAGE_SIZE];
             ANSI_STRING ansi = { 0 };
             if (NT_SUCCESS(RtlUnicodeStringToAnsiString(&ansi, &nameInfo->Name, TRUE))) {
+                CHAR escaped[520];
+                if (!JsonEscapeString(escaped, sizeof(escaped), ansi.Buffer))
+                    escaped[0] = '\0';
                 RtlStringCchPrintfA(json, ARRAYSIZE(json),
                     "{ \"event\": \"file_access\", \"pid\": %lu, \"path\": \"%s\", \"op\": \"write\" }",
-                    (ULONG)(ULONG_PTR)callerPid, ansi.Buffer);
+                    (ULONG)(ULONG_PTR)callerPid, escaped);
                 ComsSendToUser(json, (ULONG)strlen(json));
                 RtlFreeAnsiString(&ansi);
             }
         }
+        /* Deny write/create of protected AC files from non-protected processes. */
+        Data->IoStatus.Status = STATUS_ACCESS_DENIED;
+        Data->IoStatus.Information = 0;
+        FltReleaseFileNameInformation(nameInfo);
+        return FLT_PREOP_COMPLETE;
     }
 
     FltReleaseFileNameInformation(nameInfo);
@@ -169,13 +182,20 @@ PreSetInfo(
             CHAR json[COMS_MAX_MESSAGE_SIZE];
             ANSI_STRING ansi = { 0 };
             if (NT_SUCCESS(RtlUnicodeStringToAnsiString(&ansi, &nameInfo->Name, TRUE))) {
+                CHAR escaped[520];
+                if (!JsonEscapeString(escaped, sizeof(escaped), ansi.Buffer))
+                    escaped[0] = '\0';
                 RtlStringCchPrintfA(json, ARRAYSIZE(json),
                     "{ \"event\": \"file_access\", \"pid\": %lu, \"path\": \"%s\", \"op\": \"%s\" }",
-                    (ULONG)(ULONG_PTR)callerPid, ansi.Buffer, opName);
+                    (ULONG)(ULONG_PTR)callerPid, escaped, opName);
                 ComsSendToUser(json, (ULONG)strlen(json));
                 RtlFreeAnsiString(&ansi);
             }
         }
+        Data->IoStatus.Status = STATUS_ACCESS_DENIED;
+        Data->IoStatus.Information = 0;
+        FltReleaseFileNameInformation(nameInfo);
+        return FLT_PREOP_COMPLETE;
     }
 
     FltReleaseFileNameInformation(nameInfo);

@@ -82,7 +82,7 @@
     </DriverSign>
     <Link>
       <AdditionalOptions>/INTEGRITYCHECK %(AdditionalOptions)</AdditionalOptions>
-      <AdditionalDependencies>%(AdditionalDependencies);fltMgr.lib</AdditionalDependencies>
+      <AdditionalDependencies>%(AdditionalDependencies);fltMgr.lib;$(DDK_LIB_PATH)wdmsec.lib</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -90,7 +90,7 @@
       <FileDigestAlgorithm>sha256</FileDigestAlgorithm>
     </DriverSign>
     <Link>
-      <AdditionalDependencies>%(AdditionalDependencies);fltMgr.lib</AdditionalDependencies>
+      <AdditionalDependencies>%(AdditionalDependencies);fltMgr.lib;$(DDK_LIB_PATH)wdmsec.lib</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>

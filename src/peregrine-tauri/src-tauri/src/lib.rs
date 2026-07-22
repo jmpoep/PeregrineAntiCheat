@@ -105,8 +105,8 @@ fn add_injection_target(name: String) -> Result<String, String> {
 
 #[tauri::command]
 fn clear_injection_targets() -> Result<String, String> {
-    DriverHandle::open()?.set_injection_enabled(false)?;
-    Ok("injection disabled".into())
+    DriverHandle::open()?.clear_injection_targets()?;
+    Ok("injection targets cleared and disabled".into())
 }
 
 #[tauri::command]
@@ -171,6 +171,11 @@ fn collect_hwid() -> Result<Vec<hwid::HwidEntry>, String> {
     Ok(hwid::collect_userland_hwids())
 }
 
+#[tauri::command]
+fn scan_overlays() -> Vec<detections::overlay::OverlayWindow> {
+    detections::overlay::detect_overlays()
+}
+
 fn start_ipc_polling(app: AppHandle) {
     let stop = Arc::new(AtomicBool::new(false));
     let rx = ipc::start_ipc_server(stop);
@@ -205,17 +210,24 @@ fn start_driver_polling(app: AppHandle) {
             match poll_handle.as_ref().unwrap().recv_event() {
                 Ok(Some(raw)) => {
                     let s = String::from_utf8_lossy(&raw);
-                    let fixed = s.replace('\\', "\\\\");
-                    if let Ok(obj) = serde_json::from_str::<serde_json::Value>(&fixed) {
-                        let ev = obj.get("event").and_then(|v| v.as_str()).unwrap_or("");
-                        match ev {
-                            "process_create" | "process_exit" |
-                            "thread_create" | "thread_exit" |
-                            "image_load" => {}
-                            _ => {
-                                eprintln!("[DBG] DRV event: {}", ev);
+                    // Kernel emits valid JSON (JsonEscapeString); no massaging.
+                    match serde_json::from_str::<serde_json::Value>(&s) {
+                        Ok(obj) => {
+                            let ev = obj.get("event").and_then(|v| v.as_str()).unwrap_or("");
+                            // High-volume / uninteresting: drop before UI.
+                            // process_exit for protected PIDs is still forwarded
+                            // so the UI can prune protectedPids (no log line).
+                            if matches!(ev, "thread_exit" | "process_create") {
+                                // intentionally filtered
+                            } else {
+                                if !matches!(ev, "process_exit") {
+                                    eprintln!("[DBG] DRV event: {}", ev);
+                                }
                                 let _ = app.emit("driver-event", &obj);
                             }
+                        }
+                        Err(e) => {
+                            eprintln!("[DBG] DRV JSON parse fail: {} | raw={}", e, s);
                         }
                     }
                 }
@@ -253,8 +265,10 @@ pub fn run() {
             scan_signatures,
             scan_vad,
             collect_hwid,
+            scan_overlays,
         ])
         .setup(|app| {
+            detections::threads::enable_debug_privilege();
             let handle = app.handle().clone();
             start_driver_polling(handle.clone());
             start_ipc_polling(handle);

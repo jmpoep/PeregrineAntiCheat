@@ -11,15 +11,21 @@ pub struct ProcessHandle(pub HANDLE);
 
 impl ProcessHandle {
     pub fn open(pid: u32) -> Option<Self> {
-        let h = unsafe {
-            OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, false, pid)
+        use windows::Win32::System::Threading::PROCESS_QUERY_LIMITED_INFORMATION;
+        // Prefer full query rights; fall back to limited (works on more protected targets).
+        let rights = [
+            PROCESS_QUERY_INFORMATION | PROCESS_VM_READ,
+            PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ,
+            PROCESS_QUERY_LIMITED_INFORMATION,
+        ];
+        for access in rights {
+            if let Ok(h) = unsafe { OpenProcess(access, false, pid) } {
+                if h != INVALID_HANDLE_VALUE {
+                    return Some(Self(h));
+                }
+            }
         }
-        .ok()?;
-        if h == INVALID_HANDLE_VALUE {
-            None
-        } else {
-            Some(Self(h))
-        }
+        None
     }
 
     pub fn read_memory(&self, addr: usize, size: usize) -> Option<Vec<u8>> {

@@ -60,15 +60,24 @@ VOID CreateProcessNotifyRoutineEx(
 ) {
     UNREFERENCED_PARAMETER(Process);
 
-    CHAR imageName[260];
-    UnicodeToAnsiLimited(CreateInfo ? CreateInfo->ImageFileName : NULL, imageName, ARRAYSIZE(imageName));
-
-
-
     if (CreateInfo != NULL) {
+        /* Injection matching only — no process_create events (system-wide spam).
+           APC inject has its own event when it fires. */
         InjOnProcessCreate(ProcessId, CreateInfo);
     } else {
+        /* process_exit only for protected PIDs (UI list cleanup); silent otherwise. */
+        BOOLEAN wasProtected = StateIsPidProtected(ProcessId);
         InjOnProcessExit(ProcessId);
+
+        if (wasProtected) {
+            CHAR json[COMS_MAX_MESSAGE_SIZE];
+            RtlStringCchPrintfA(
+                json,
+                ARRAYSIZE(json),
+                "{ \"event\": \"process_exit\", \"pid\": %lu }",
+                (ULONG)(ULONG_PTR)ProcessId);
+            SendJsonString(json);
+        }
     }
 }
 
@@ -155,6 +164,10 @@ VOID LoadImageNotifyRoutine(
     CHAR imageName[260];
     UnicodeToAnsiLimited(FullImageName, imageName, ARRAYSIZE(imageName));
 
+    CHAR escaped[520];
+    if (!JsonEscapeString(escaped, sizeof(escaped), imageName))
+        escaped[0] = '\0';
+
     CHAR json[COMS_MAX_MESSAGE_SIZE];
     RtlStringCchPrintfA(
         json,
@@ -163,7 +176,7 @@ VOID LoadImageNotifyRoutine(
         (ULONG)(ULONG_PTR)ProcessId,
         ImageInfo ? ImageInfo->ImageBase : NULL,
         ImageInfo ? (ULONG)ImageInfo->ImageSize : 0,
-        imageName);
+        escaped);
 
     SendJsonString(json);
 }

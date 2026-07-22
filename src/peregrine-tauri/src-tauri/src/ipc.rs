@@ -23,7 +23,11 @@ pub fn start_ipc_server(stop: Arc<AtomicBool>) -> IpcReceiver {
 
         let wide: Vec<u16> = PIPE_NAME.encode_utf16().chain(std::iter::once(0)).collect();
 
-        let sddl: Vec<u16> = "D:(A;;GA;;;WD)\0".encode_utf16().collect();
+        // SYSTEM + Administrators full access; Authenticated Users read/write
+        // so medium-IL injected game processes can still send telemetry.
+        // Everyone (WD) is intentionally not granted access.
+        let sddl: Vec<u16> =
+            "D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;AU)\0".encode_utf16().collect();
         let mut sd_ptr: *mut windows::Win32::Security::SECURITY_DESCRIPTOR =
             std::ptr::null_mut();
         unsafe {
