@@ -85,23 +85,31 @@ NTKERNELAPI NTSTATUS PsWrapApcWow64Thread(
 #define INJ_LOADLIBRARY_FLAGS  ((ULONG)0)
 
 /* ------------------------------------------------------------------ */
-/*  Global injection state                                            */
+/*  Global injection state (per-role paths + targets)                 */
 /* ------------------------------------------------------------------ */
+
+typedef struct _INJ_PROFILE {
+    WCHAR  DllPathX64[INJ_MAX_PATH];
+    USHORT DllPathX64Bytes;
+    WCHAR  DllPathX86[INJ_MAX_PATH];
+    USHORT DllPathX86Bytes;
+    CHAR   Targets[INJ_MAX_TARGETS][INJ_MAX_NAME];
+    ULONG  TargetCount;
+} INJ_PROFILE;
+
+typedef struct _INJ_PENDING {
+    HANDLE Pid;
+    UCHAR  Role;
+} INJ_PENDING;
 
 typedef struct _INJ_STATE {
     KSPIN_LOCK Lock;
     BOOLEAN    Enabled;
 
-    WCHAR  DllPathX64[INJ_MAX_PATH];
-    USHORT DllPathX64Bytes;
-    WCHAR  DllPathX86[INJ_MAX_PATH];
-    USHORT DllPathX86Bytes;
+    INJ_PROFILE Profile[INJ_ROLE_COUNT];
 
-    CHAR   Targets[INJ_MAX_TARGETS][INJ_MAX_NAME];
-    ULONG  TargetCount;
-
-    HANDLE Pending[INJ_MAX_PENDING];
-    ULONG  PendingCount;
+    INJ_PENDING Pending[INJ_MAX_PENDING];
+    ULONG       PendingCount;
 
     /* Path-only user allocations to free on process exit */
     struct {
@@ -113,6 +121,16 @@ typedef struct _INJ_STATE {
 } INJ_STATE;
 
 static INJ_STATE g_Inj = { 0 };
+
+static __forceinline BOOLEAN InjRoleValid(UCHAR Role)
+{
+    return Role < INJ_ROLE_COUNT;
+}
+
+static __forceinline const CHAR* InjRoleName(UCHAR Role)
+{
+    return Role == INJ_ROLE_SENSOR ? "sensor" : "game";
+}
 
 static VOID PendingFreeAdd(HANDLE Pid, PVOID Base, SIZE_T Size)
 {
@@ -221,25 +239,34 @@ static BOOLEAN UStrContainsI(_In_ PCUNICODE_STRING Str, _In_ PCWSTR Sub)
 /*  Pending-PID helpers (spinlock-protected)                          */
 /* ------------------------------------------------------------------ */
 
-static VOID PendingAdd(HANDLE Pid)
+static VOID PendingAdd(HANDLE Pid, UCHAR Role)
 {
     KIRQL irql;
     KeAcquireSpinLock(&g_Inj.Lock, &irql);
     if (g_Inj.PendingCount < INJ_MAX_PENDING) {
-        for (ULONG i = 0; i < g_Inj.PendingCount; i++)
-            if (g_Inj.Pending[i] == Pid) { KeReleaseSpinLock(&g_Inj.Lock, irql); return; }
-        g_Inj.Pending[g_Inj.PendingCount++] = Pid;
+        for (ULONG i = 0; i < g_Inj.PendingCount; i++) {
+            if (g_Inj.Pending[i].Pid == Pid) {
+                KeReleaseSpinLock(&g_Inj.Lock, irql);
+                return;
+            }
+        }
+        g_Inj.Pending[g_Inj.PendingCount].Pid  = Pid;
+        g_Inj.Pending[g_Inj.PendingCount].Role = Role;
+        g_Inj.PendingCount++;
     }
     KeReleaseSpinLock(&g_Inj.Lock, irql);
 }
 
-static BOOLEAN PendingRemove(HANDLE Pid)
+/* Remove pending entry; returns TRUE and writes Role if found. */
+static BOOLEAN PendingTake(HANDLE Pid, _Out_ UCHAR* OutRole)
 {
     BOOLEAN found = FALSE;
     KIRQL irql;
     KeAcquireSpinLock(&g_Inj.Lock, &irql);
     for (ULONG i = 0; i < g_Inj.PendingCount; i++) {
-        if (g_Inj.Pending[i] == Pid) {
+        if (g_Inj.Pending[i].Pid == Pid) {
+            if (OutRole)
+                *OutRole = g_Inj.Pending[i].Role;
             g_Inj.Pending[i] = g_Inj.Pending[--g_Inj.PendingCount];
             found = TRUE;
             break;
@@ -250,12 +277,13 @@ static BOOLEAN PendingRemove(HANDLE Pid)
 }
 
 /* ------------------------------------------------------------------ */
-/*  Target-name matching                                              */
+/*  Target-name matching (Game first, then Sensor)                    */
 /* ------------------------------------------------------------------ */
 
-static BOOLEAN MatchesAnyTarget(_In_ const CHAR* ImageName)
+/* Returns TRUE and OutRole if basename matches any profile. */
+static BOOLEAN MatchTargetRole(_In_ const CHAR* ImageName, _Out_ UCHAR* OutRole)
 {
-    if (!ImageName || !*ImageName) return FALSE;
+    if (!ImageName || !*ImageName || !OutRole) return FALSE;
     const CHAR* fn = ImageName;
     for (const CHAR* p = ImageName; *p; p++)
         if (*p == '\\' || *p == '/') fn = p + 1;
@@ -263,8 +291,16 @@ static BOOLEAN MatchesAnyTarget(_In_ const CHAR* ImageName)
     KIRQL irql;
     KeAcquireSpinLock(&g_Inj.Lock, &irql);
     BOOLEAN hit = FALSE;
-    for (ULONG i = 0; i < g_Inj.TargetCount; i++) {
-        if (_stricmp(fn, g_Inj.Targets[i]) == 0) { hit = TRUE; break; }
+    /* Prefer Game over Sensor if the same name is listed twice. */
+    for (UCHAR role = 0; role < INJ_ROLE_COUNT && !hit; role++) {
+        INJ_PROFILE* prof = &g_Inj.Profile[role];
+        for (ULONG i = 0; i < prof->TargetCount; i++) {
+            if (_stricmp(fn, prof->Targets[i]) == 0) {
+                *OutRole = role;
+                hit = TRUE;
+                break;
+            }
+        }
     }
     KeReleaseSpinLock(&g_Inj.Lock, irql);
     return hit;
@@ -469,26 +505,30 @@ static VOID NTAPI RundownCb(PRKAPC Apc)
 
 static NTSTATUS DoInjectInContext(
     _In_ BOOLEAN IsWow64,
-    _In_ PVOID Kernel32Base)
+    _In_ PVOID Kernel32Base,
+    _In_ UCHAR Role)
 {
     NTSTATUS status;
     PVOID    alloc = NULL;
     SIZE_T   allocSz = 0;
 
-    if (!Kernel32Base)
+    if (!Kernel32Base || !InjRoleValid(Role))
         return STATUS_INVALID_PARAMETER;
 
-    /* Pick DLL path for this architecture */
+    /* Pick DLL path for this role + architecture */
     KIRQL irql;
     WCHAR  dllPath[INJ_MAX_PATH];
     USHORT dllBytes;
     KeAcquireSpinLock(&g_Inj.Lock, &irql);
-    if (IsWow64) {
-        RtlCopyMemory(dllPath, g_Inj.DllPathX86, sizeof(g_Inj.DllPathX86));
-        dllBytes = g_Inj.DllPathX86Bytes;
-    } else {
-        RtlCopyMemory(dllPath, g_Inj.DllPathX64, sizeof(g_Inj.DllPathX64));
-        dllBytes = g_Inj.DllPathX64Bytes;
+    {
+        INJ_PROFILE* prof = &g_Inj.Profile[Role];
+        if (IsWow64) {
+            RtlCopyMemory(dllPath, prof->DllPathX86, sizeof(prof->DllPathX86));
+            dllBytes = prof->DllPathX86Bytes;
+        } else {
+            RtlCopyMemory(dllPath, prof->DllPathX64, sizeof(prof->DllPathX64));
+            dllBytes = prof->DllPathX64Bytes;
+        }
     }
     KeReleaseSpinLock(&g_Inj.Lock, irql);
 
@@ -559,47 +599,53 @@ VOID InjInit(VOID)
 
 VOID InjCleanup(VOID) { /* static state, nothing to free */ }
 
-NTSTATUS InjSetDllPath(BOOLEAN IsX86, const WCHAR* Path, USHORT PathLenBytes)
+NTSTATUS InjSetDllPath(UCHAR Role, BOOLEAN IsX86, const WCHAR* Path, USHORT PathLenBytes)
 {
-    if (!Path || PathLenBytes == 0 ||
+    if (!InjRoleValid(Role) || !Path || PathLenBytes == 0 ||
         PathLenBytes > (INJ_MAX_PATH - 1) * sizeof(WCHAR))
         return STATUS_INVALID_PARAMETER;
 
     KIRQL irql;
     KeAcquireSpinLock(&g_Inj.Lock, &irql);
-    if (IsX86) {
-        RtlZeroMemory(g_Inj.DllPathX86, sizeof(g_Inj.DllPathX86));
-        RtlCopyMemory(g_Inj.DllPathX86, Path, PathLenBytes);
-        g_Inj.DllPathX86Bytes = PathLenBytes;
-    } else {
-        RtlZeroMemory(g_Inj.DllPathX64, sizeof(g_Inj.DllPathX64));
-        RtlCopyMemory(g_Inj.DllPathX64, Path, PathLenBytes);
-        g_Inj.DllPathX64Bytes = PathLenBytes;
+    {
+        INJ_PROFILE* prof = &g_Inj.Profile[Role];
+        if (IsX86) {
+            RtlZeroMemory(prof->DllPathX86, sizeof(prof->DllPathX86));
+            RtlCopyMemory(prof->DllPathX86, Path, PathLenBytes);
+            prof->DllPathX86Bytes = PathLenBytes;
+        } else {
+            RtlZeroMemory(prof->DllPathX64, sizeof(prof->DllPathX64));
+            RtlCopyMemory(prof->DllPathX64, Path, PathLenBytes);
+            prof->DllPathX64Bytes = PathLenBytes;
+        }
     }
     KeReleaseSpinLock(&g_Inj.Lock, irql);
     return STATUS_SUCCESS;
 }
 
-NTSTATUS InjAddTarget(const CHAR* Name, ULONG NameLen)
+NTSTATUS InjAddTarget(UCHAR Role, const CHAR* Name, ULONG NameLen)
 {
-    if (!Name || NameLen == 0 || NameLen >= INJ_MAX_NAME)
+    if (!InjRoleValid(Role) || !Name || NameLen == 0 || NameLen >= INJ_MAX_NAME)
         return STATUS_INVALID_PARAMETER;
 
     KIRQL irql;
     KeAcquireSpinLock(&g_Inj.Lock, &irql);
-    if (g_Inj.TargetCount >= INJ_MAX_TARGETS) {
-        KeReleaseSpinLock(&g_Inj.Lock, irql);
-        return STATUS_INSUFFICIENT_RESOURCES;
-    }
-    for (ULONG i = 0; i < g_Inj.TargetCount; i++) {
-        if (_stricmp(g_Inj.Targets[i], Name) == 0) {
+    {
+        INJ_PROFILE* prof = &g_Inj.Profile[Role];
+        if (prof->TargetCount >= INJ_MAX_TARGETS) {
             KeReleaseSpinLock(&g_Inj.Lock, irql);
-            return STATUS_ALREADY_COMMITTED;
+            return STATUS_INSUFFICIENT_RESOURCES;
         }
+        for (ULONG i = 0; i < prof->TargetCount; i++) {
+            if (_stricmp(prof->Targets[i], Name) == 0) {
+                KeReleaseSpinLock(&g_Inj.Lock, irql);
+                return STATUS_ALREADY_COMMITTED;
+            }
+        }
+        RtlCopyMemory(prof->Targets[prof->TargetCount], Name, NameLen);
+        prof->Targets[prof->TargetCount][NameLen] = '\0';
+        prof->TargetCount++;
     }
-    RtlCopyMemory(g_Inj.Targets[g_Inj.TargetCount], Name, NameLen);
-    g_Inj.Targets[g_Inj.TargetCount][NameLen] = '\0';
-    g_Inj.TargetCount++;
     KeReleaseSpinLock(&g_Inj.Lock, irql);
     return STATUS_SUCCESS;
 }
@@ -608,7 +654,8 @@ NTSTATUS InjClearTargets(VOID)
 {
     KIRQL irql;
     KeAcquireSpinLock(&g_Inj.Lock, &irql);
-    g_Inj.TargetCount  = 0;
+    for (UCHAR r = 0; r < INJ_ROLE_COUNT; r++)
+        g_Inj.Profile[r].TargetCount = 0;
     g_Inj.PendingCount = 0;
     /* Leave PendingFree entries — still need to free if inject already ran. */
     KeReleaseSpinLock(&g_Inj.Lock, irql);
@@ -637,31 +684,33 @@ VOID InjOnImageLoad(HANDLE ProcessId, PUNICODE_STRING FullImageName,
        initialized by then; APC is delivered later (no KeTestAlertThread). */
     if (!UStrEndsWith(FullImageName, L"kernel32.dll")) return;
 
-    BOOLEAN isPending = PendingRemove(ProcessId);
-    if (!isPending) return;
+    UCHAR role = INJ_ROLE_GAME;
+    if (!PendingTake(ProcessId, &role)) return;
 
     BOOLEAN isWow64 = UStrContainsI(FullImageName, L"syswow64");
 
-    NTSTATUS st = DoInjectInContext(isWow64, ImageInfo->ImageBase);
+    NTSTATUS st = DoInjectInContext(isWow64, ImageInfo->ImageBase, role);
 
     CHAR json[COMS_MAX_MESSAGE_SIZE];
     ULONG tid = (ULONG)(ULONG_PTR)PsGetCurrentThreadId();
+    const CHAR* roleStr = InjRoleName(role);
     if (NT_SUCCESS(st)) {
-        /* Kernel is source of truth for ObCallback / notify filtering. */
-        StateAddPid(ProcessId);
+        /* Only Game inject auto-protects the PID (Sensor = cheat host). */
+        if (role == INJ_ROLE_GAME)
+            StateAddPid(ProcessId);
         RtlStringCchPrintfA(json, ARRAYSIZE(json),
             "{ \"event\": \"apc_inject\", \"pid\": %lu, \"tid\": %lu, "
-            "\"status\": \"success\" }",
-            (ULONG)(ULONG_PTR)ProcessId, tid);
+            "\"status\": \"success\", \"role\": \"%s\" }",
+            (ULONG)(ULONG_PTR)ProcessId, tid, roleStr);
     } else {
         RtlStringCchPrintfA(json, ARRAYSIZE(json),
             "{ \"event\": \"apc_inject\", \"pid\": %lu, \"tid\": %lu, "
-            "\"status\": \"failed\", \"error\": \"0x%08X\" }",
-            (ULONG)(ULONG_PTR)ProcessId, tid, st);
+            "\"status\": \"failed\", \"error\": \"0x%08X\", \"role\": \"%s\" }",
+            (ULONG)(ULONG_PTR)ProcessId, tid, st, roleStr);
     }
     ComsSendToUser(json, (ULONG)strlen(json));
-    KdPrint(("Peregrine: APC inject (LoadLibraryExW) PID=%lu => 0x%08X\n",
-        (ULONG)(ULONG_PTR)ProcessId, st));
+    KdPrint(("Peregrine: APC inject role=%s PID=%lu => 0x%08X\n",
+        roleStr, (ULONG)(ULONG_PTR)ProcessId, st));
 }
 
 VOID InjOnProcessCreate(HANDLE ProcessId, PPS_CREATE_NOTIFY_INFO CreateInfo)
@@ -670,9 +719,14 @@ VOID InjOnProcessCreate(HANDLE ProcessId, PPS_CREATE_NOTIFY_INFO CreateInfo)
 
     KIRQL irql;
     KeAcquireSpinLock(&g_Inj.Lock, &irql);
-    BOOLEAN go = g_Inj.Enabled && g_Inj.TargetCount > 0;
+    BOOLEAN go = g_Inj.Enabled;
+    ULONG totalTargets = 0;
+    if (go) {
+        for (UCHAR r = 0; r < INJ_ROLE_COUNT; r++)
+            totalTargets += g_Inj.Profile[r].TargetCount;
+    }
     KeReleaseSpinLock(&g_Inj.Lock, irql);
-    if (!go) return;
+    if (!go || totalTargets == 0) return;
 
     ANSI_STRING ansi = { 0 };
     if (!NT_SUCCESS(RtlUnicodeStringToAnsiString(&ansi, CreateInfo->ImageFileName, TRUE)))
@@ -684,16 +738,18 @@ VOID InjOnProcessCreate(HANDLE ProcessId, PPS_CREATE_NOTIFY_INFO CreateInfo)
     buf[n] = '\0';
     RtlFreeAnsiString(&ansi);
 
-    if (MatchesAnyTarget(buf)) {
-        PendingAdd(ProcessId);
-        KdPrint(("Peregrine: injection pending PID %lu (%s)\n",
-            (ULONG)(ULONG_PTR)ProcessId, buf));
+    UCHAR role = INJ_ROLE_GAME;
+    if (MatchTargetRole(buf, &role)) {
+        PendingAdd(ProcessId, role);
+        KdPrint(("Peregrine: injection pending PID %lu role=%s (%s)\n",
+            (ULONG)(ULONG_PTR)ProcessId, InjRoleName(role), buf));
     }
 }
 
 VOID InjOnProcessExit(HANDLE ProcessId)
 {
-    PendingRemove(ProcessId);
+    UCHAR unusedRole = 0;
+    PendingTake(ProcessId, &unusedRole);
     PendingFreeRelease(ProcessId, TRUE);
     StateRemovePid(ProcessId);
 }

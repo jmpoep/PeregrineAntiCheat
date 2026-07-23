@@ -12,7 +12,10 @@
   let pidInput = $state("");
   let targetInput = $state("");
   let protectedPids = $state<number[]>([]);
-  let injectionTargets = $state<string[]>([]);
+  /** Game inject targets (PeregrineGame DLL + auto-protect) */
+  let gameTargets = $state<string[]>([]);
+  /** Sensor inject targets (PeregrineSensor DLL, no auto-protect) */
+  let sensorTargets = $state<string[]>([]);
   let logs = $state<LogEntry[]>([]);
   let logEl: HTMLDivElement;
   const MAX_LOGS = 2000;
@@ -60,17 +63,31 @@
     }
   }
 
-  async function addTarget() {
+  async function addGameTarget() {
     const name = targetInput.trim();
     if (!name) { addLog("target name is empty", "err"); return; }
     if (!requireDriver()) return;
     try {
       const msg: string = await invoke("add_injection_target", { name });
-      injectionTargets = [...injectionTargets, name];
+      if (!gameTargets.includes(name)) gameTargets = [...gameTargets, name];
       addLog(`[APC] ${msg}`, "apc_ok");
       targetInput = "";
     } catch (e: any) {
-      addLog(`[APC] add target failed: ${e}`, "err");
+      addLog(`[APC] add Game target failed: ${e}`, "err");
+    }
+  }
+
+  async function addSensorTarget() {
+    const name = targetInput.trim();
+    if (!name) { addLog("target name is empty", "err"); return; }
+    if (!requireDriver()) return;
+    try {
+      const msg: string = await invoke("add_sensor_injection_target", { name });
+      if (!sensorTargets.includes(name)) sensorTargets = [...sensorTargets, name];
+      addLog(`[APC] ${msg}`, "apc_ok");
+      targetInput = "";
+    } catch (e: any) {
+      addLog(`[APC] add Sensor target failed: ${e}`, "err");
     }
   }
 
@@ -78,7 +95,8 @@
     if (!requireDriver()) return;
     try {
       const msg: string = await invoke("clear_injection_targets");
-      injectionTargets = [];
+      gameTargets = [];
+      sensorTargets = [];
       addLog(`[APC] ${msg}`, "info");
     } catch (e: any) {
       addLog(`[APC] clear failed: ${e}`, "err");
@@ -445,20 +463,28 @@
         break;
       }
 
-      case "apc_inject":
+      case "apc_inject": {
+        const role = (d.role as string | undefined) || "game";
         if (d.status === "success") {
-          addLog(`[ok] APC injection PID=${d.pid} TID=${d.tid}`, "apc_ok");
-          if (typeof d.pid === "number" && !protectedPids.includes(d.pid)) {
-            protectedPids = [...protectedPids, d.pid];
+          addLog(`[ok] APC inject (${role}) PID=${d.pid} TID=${d.tid}`, "apc_ok");
+          // Only Game inject auto-protects (Sensor = cheat host).
+          if (role === "game" && typeof d.pid === "number") {
+            if (!protectedPids.includes(d.pid)) {
+              protectedPids = [...protectedPids, d.pid];
+            }
+            // Keep UI list in sync; kernel already StateAddPid on Game success.
+            void invoke("add_pid", { pid: d.pid }).catch(() => {
+              /* kernel may already own the PID */
+            });
           }
-          // Keep UI list in sync with kernel; kernel already StateAddPid on success.
-          void invoke("add_pid", { pid: d.pid }).catch(() => {
-            /* kernel may already own the PID */
-          });
         } else {
-          addLog(`[DLL Inject FAIL] APC injection PID=${d.pid} error=${d.error}`, "apc_fail");
+          addLog(
+            `[DLL Inject FAIL] APC (${role}) PID=${d.pid} error=${d.error}`,
+            "apc_fail",
+          );
         }
         break;
+      }
 
       case "driver_scan":
         addLog(`[Driver Blacklist] DETECTED: ${d.driver} (${d.path}) size=${d.size}`, "drv_bl");
@@ -635,7 +661,8 @@
       Protected: {protectedPids.length ? protectedPids.join(", ") : "None"}
     </div>
     <div class="pids">
-      Injection targets: {injectionTargets.length ? injectionTargets.join(", ") : "None"}
+      Game inject: {gameTargets.length ? gameTargets.join(", ") : "None"}
+      &nbsp;|&nbsp; Sensor inject: {sensorTargets.length ? sensorTargets.join(", ") : "None"}
     </div>
   </header>
 
@@ -647,7 +674,8 @@
     <button class="btn accent" onclick={setPpl}>PPL</button>
     <span style="color:#585b70">|</span>
     <input type="text" bind:value={targetInput} placeholder="target.exe" class="pid-input" style="width:110px" />
-    <button class="btn accent" onclick={addTarget}>Inject</button>
+    <button class="btn accent" onclick={addGameTarget} title="Inject Game DLL + auto-protect">Game</button>
+    <button class="btn" style="background:#89b4fa;color:black" onclick={addSensorTarget} title="Inject Sensor DLL (hooks, no protect)">Sensor</button>
     <button class="btn" onclick={clearTargets}>Clear Inj</button>
     <span style="color:#585b70">|</span>
     <button class="btn" onclick={checkModules}>Modules</button>

@@ -12,13 +12,19 @@
 #define INJ_MAX_NAME    260
 #define INJ_MAX_PATH    260
 
+/* Inject roles: different DLL paths + target lists */
+#define INJ_ROLE_GAME   ((UCHAR)0)
+#define INJ_ROLE_SENSOR ((UCHAR)1)
+#define INJ_ROLE_COUNT  2
+
 VOID InjInit(VOID);
 VOID InjCleanup(VOID);
 
-NTSTATUS InjSetDllPath(_In_ BOOLEAN IsX86,
+NTSTATUS InjSetDllPath(_In_ UCHAR Role, _In_ BOOLEAN IsX86,
     _In_reads_bytes_(PathLenBytes) const WCHAR* Path,
     _In_ USHORT PathLenBytes);
-NTSTATUS InjAddTarget(_In_reads_(NameLen) const CHAR* Name, _In_ ULONG NameLen);
+NTSTATUS InjAddTarget(_In_ UCHAR Role,
+    _In_reads_(NameLen) const CHAR* Name, _In_ ULONG NameLen);
 NTSTATUS InjClearTargets(VOID);
 VOID     InjSetEnabled(_In_ BOOLEAN Enabled);
 

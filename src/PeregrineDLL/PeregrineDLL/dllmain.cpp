@@ -1,4 +1,9 @@
 // dllmain.cpp : Defines the entry point for the DLL application.
+//
+// Build roles (PEREGRINE_DLL_ROLE):
+//   0 = Game   — full hooks + HWBP/VEH (inject into protected game)
+//   1 = Sensor — external API hooks + callstack, no HWBP (inject into cheats)
+//
 #include "pch.h"
 #include "MinHook.h"
 #include "ipc.h"
@@ -7,6 +12,17 @@
 #include <stdio.h>
 #include <stdarg.h>
 // user32 loaded dynamically only when needed (DebugEntry)
+
+#ifndef PEREGRINE_DLL_ROLE
+#define PEREGRINE_DLL_ROLE 0
+#endif
+#define PEREGRINE_ROLE_GAME   0
+#define PEREGRINE_ROLE_SENSOR 1
+#if PEREGRINE_DLL_ROLE == PEREGRINE_ROLE_SENSOR
+#define PEREGRINE_IS_SENSOR 1
+#else
+#define PEREGRINE_IS_SENSOR 0
+#endif
 
 static void DebugLog(const char* format, ...) {
     char buf[512];
@@ -46,7 +62,9 @@ typedef LPVOID(WINAPI* VirtualAllocEx_t)(HANDLE, LPVOID, SIZE_T, DWORD, DWORD);
 typedef BOOL(WINAPI* VirtualProtectEx_t)(HANDLE, LPVOID, SIZE_T, DWORD, PDWORD);
 typedef HANDLE(WINAPI* CreateRemoteThread_t)(HANDLE, LPSECURITY_ATTRIBUTES, SIZE_T, LPTHREAD_START_ROUTINE, LPVOID, DWORD, LPDWORD);
 typedef HANDLE(WINAPI* OpenProcess_t)(DWORD, BOOL, DWORD);
+#if !PEREGRINE_IS_SENSOR
 typedef LONG(NTAPI* NtSetContextThread_t)(HANDLE, PCONTEXT);
+#endif
 
 static ReadProcessMemory_t      oReadProcessMemory = nullptr;
 static WriteProcessMemory_t     oWriteProcessMemory = nullptr;
@@ -56,7 +74,9 @@ static VirtualAllocEx_t         oVirtualAllocEx = nullptr;
 static VirtualProtectEx_t       oVirtualProtectEx = nullptr;
 static CreateRemoteThread_t     oCreateRemoteThread = nullptr;
 static OpenProcess_t            oOpenProcess = nullptr;
+#if !PEREGRINE_IS_SENSOR
 static NtSetContextThread_t     oNtSetContextThread = nullptr;
+#endif
 
 // ============================================================
 // Hook implementations
@@ -151,6 +171,7 @@ static HANDLE WINAPI HookOpenProcess(DWORD dwAccess, BOOL bInherit, DWORD dwPID)
     return result;
 }
 
+#if !PEREGRINE_IS_SENSOR
 #define CONTEXT_DBG_REGS_FLAG 0x00100010
 
 static LONG NTAPI HookNtSetContextThread(HANDLE hThread, PCONTEXT ctx) {
@@ -165,6 +186,7 @@ static LONG NTAPI HookNtSetContextThread(HANDLE hThread, PCONTEXT ctx) {
     }
     return oNtSetContextThread(hThread, ctx);
 }
+#endif
 
 // ============================================================
 // Hook setup helpers
@@ -196,7 +218,11 @@ static bool InstallHook(HMODULE primary, HMODULE fallback, LPCSTR name, void** p
 
 static DWORD WINAPI InitThread(LPVOID) {
     if (InterlockedCompareExchange(&g_inited, 1, 0) != 0) return 0;
-    DebugLog("[PeregrineDLL] InitThread started (PID=%lu)\n", PID);
+#if PEREGRINE_IS_SENSOR
+    DebugLog("[PeregrineDLL] InitThread SENSOR started (PID=%lu)\n", PID);
+#else
+    DebugLog("[PeregrineDLL] InitThread GAME started (PID=%lu)\n", PID);
+#endif
 
     if (MH_Initialize() != MH_OK) {
         DebugLog("[PeregrineDLL] MH_Initialize failed\n");
@@ -207,7 +233,7 @@ static DWORD WINAPI InitThread(LPVOID) {
     HMODULE k32   = GetModuleHandleW(L"kernel32.dll");
     HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
 
-    // Memory access hooks
+    // Memory access hooks (both roles — Game keeps full set for no regression)
     InstallHook(kb, k32, "ReadProcessMemory",  (void**)&oReadProcessMemory,  (void*)HookReadProcessMemory);
     InstallHook(kb, k32, "WriteProcessMemory", (void**)&oWriteProcessMemory, (void*)HookWriteProcessMemory);
     InstallHook(ntdll, NULL, "NtReadVirtualMemory",  (void**)&oNtReadVirtualMemory,  (void*)HookNtReadVirtualMemory);
@@ -221,11 +247,15 @@ static DWORD WINAPI InitThread(LPVOID) {
     InstallHook(kb, k32, "CreateRemoteThread", (void**)&oCreateRemoteThread, (void*)HookCreateRemoteThread);
     InstallHook(kb, k32, "OpenProcess",        (void**)&oOpenProcess,        (void*)HookOpenProcess);
 
-    // Debug register protection
+#if !PEREGRINE_IS_SENSOR
+    // Game only: debug register / VEH protection
     InstallHook(ntdll, NULL, "NtSetContextThread", (void**)&oNtSetContextThread, (void*)HookNtSetContextThread);
+#endif
 
     callstack_init();
+#if !PEREGRINE_IS_SENSOR
     hwbp_init();
+#endif
     DebugLog("[PeregrineDLL] Initialization complete\n");
 
     char exeName[MAX_PATH] = {0};
@@ -234,7 +264,13 @@ static DWORD WINAPI InitThread(LPVOID) {
     for (const char* p = exeName; *p; p++)
         if (*p == '\\' || *p == '/') baseName = p + 1;
 
-    ipc_log_event("hello", "\"callerPID\":%lu,\"image\":\"%s\"", PID, baseName);
+#if PEREGRINE_IS_SENSOR
+    ipc_log_event("hello",
+        "\"callerPID\":%lu,\"image\":\"%s\",\"role\":\"sensor\"", PID, baseName);
+#else
+    ipc_log_event("hello",
+        "\"callerPID\":%lu,\"image\":\"%s\",\"role\":\"game\"", PID, baseName);
+#endif
 
     return 0;
 }

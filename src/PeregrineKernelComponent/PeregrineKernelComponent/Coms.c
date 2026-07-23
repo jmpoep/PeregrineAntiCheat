@@ -151,27 +151,27 @@ static VOID ComsHandleUserCommand(_In_reads_bytes_(DataSize) const UCHAR* Data,
         break;
     }
 
-    case 8: { // set x64 DLL path for OpenEDR-style APC inject (full wide path)
+    case 8: { // set Game x64 DLL path (full wide path)
         if (DataSize <= 1) { KdPrint(("Peregrine: cmd=8 empty\n")); return; }
         USHORT pathBytes = (USHORT)(DataSize - 1);
-        InjSetDllPath(FALSE, (const WCHAR*)(Data + 1), pathBytes);
-        KdPrint(("Peregrine: set x64 DLL path (%u bytes)\n", pathBytes));
+        InjSetDllPath(INJ_ROLE_GAME, FALSE, (const WCHAR*)(Data + 1), pathBytes);
+        KdPrint(("Peregrine: set Game x64 DLL path (%u bytes)\n", pathBytes));
         break;
     }
 
-    case 9: { // set x86 DLL path for OpenEDR-style APC inject (full wide path)
+    case 9: { // set Game x86 DLL path (full wide path)
         if (DataSize <= 1) { KdPrint(("Peregrine: cmd=9 empty\n")); return; }
         USHORT pathBytes = (USHORT)(DataSize - 1);
-        InjSetDllPath(TRUE, (const WCHAR*)(Data + 1), pathBytes);
-        KdPrint(("Peregrine: set x86 DLL path (%u bytes)\n", pathBytes));
+        InjSetDllPath(INJ_ROLE_GAME, TRUE, (const WCHAR*)(Data + 1), pathBytes);
+        KdPrint(("Peregrine: set Game x86 DLL path (%u bytes)\n", pathBytes));
         break;
     }
 
-    case 10: { // add APC injection target process name (ANSI basename, e.g. game.exe)
+    case 10: { // add Game APC injection target (ANSI basename, e.g. game.exe)
         if (DataSize <= 1) { KdPrint(("Peregrine: cmd=10 empty\n")); return; }
         ULONG nameLen = DataSize - 1;
-        InjAddTarget((const CHAR*)(Data + 1), nameLen);
-        KdPrint(("Peregrine: added injection target\n"));
+        InjAddTarget(INJ_ROLE_GAME, (const CHAR*)(Data + 1), nameLen);
+        KdPrint(("Peregrine: added Game injection target\n"));
         break;
     }
 
@@ -204,6 +204,30 @@ static VOID ComsHandleUserCommand(_In_reads_bytes_(DataSize) const UCHAR* Data,
         InjClearTargets();
         InjSetEnabled(FALSE);
         KdPrint(("Peregrine: injection targets cleared and disabled\n"));
+        break;
+    }
+
+    case 15: { // set Sensor x64 DLL path
+        if (DataSize <= 1) { KdPrint(("Peregrine: cmd=15 empty\n")); return; }
+        USHORT pathBytes = (USHORT)(DataSize - 1);
+        InjSetDllPath(INJ_ROLE_SENSOR, FALSE, (const WCHAR*)(Data + 1), pathBytes);
+        KdPrint(("Peregrine: set Sensor x64 DLL path (%u bytes)\n", pathBytes));
+        break;
+    }
+
+    case 16: { // set Sensor x86 DLL path
+        if (DataSize <= 1) { KdPrint(("Peregrine: cmd=16 empty\n")); return; }
+        USHORT pathBytes = (USHORT)(DataSize - 1);
+        InjSetDllPath(INJ_ROLE_SENSOR, TRUE, (const WCHAR*)(Data + 1), pathBytes);
+        KdPrint(("Peregrine: set Sensor x86 DLL path (%u bytes)\n", pathBytes));
+        break;
+    }
+
+    case 17: { // add Sensor APC injection target (ANSI basename)
+        if (DataSize <= 1) { KdPrint(("Peregrine: cmd=17 empty\n")); return; }
+        ULONG nameLen = DataSize - 1;
+        InjAddTarget(INJ_ROLE_SENSOR, (const CHAR*)(Data + 1), nameLen);
+        KdPrint(("Peregrine: added Sensor injection target\n"));
         break;
     }
 

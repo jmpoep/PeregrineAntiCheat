@@ -44,17 +44,32 @@ fn connect_driver() -> Result<String, String> {
         None
     };
 
-    if let Some(x64) = find_dll(&["PeregrineDLL_x64.dll", "Peregrine64.dll", "64.dll"]) {
+    // Game DLL (primary inject into protected game)
+    if let Some(x64) = find_dll(&["PeregrineGame_x64.dll"]) {
         let _ = h.set_dll_path_x64(&x64);
-        msg.push_str(&format!(" | x64: {x64}"));
+        msg.push_str(&format!(" | game-x64: {x64}"));
     } else {
-        msg.push_str(" | x64 DLL: NOT FOUND");
+        msg.push_str(" | game-x64: NOT FOUND");
     }
-    if let Some(x86) = find_dll(&["PeregrineDLL_x86.dll", "Peregrine32.dll", "32.dll"]) {
+    if let Some(x86) = find_dll(&["PeregrineGame_x86.dll"]) {
         let _ = h.set_dll_path_x86(&x86);
-        msg.push_str(&format!(" | x86: {x86}"));
+        msg.push_str(&format!(" | game-x86: {x86}"));
     } else {
-        msg.push_str(" | x86 DLL: NOT FOUND");
+        msg.push_str(" | game-x86: NOT FOUND");
+    }
+
+    // Sensor DLL (optional inject into cheats / external tools)
+    if let Some(x64) = find_dll(&["PeregrineSensor_x64.dll"]) {
+        let _ = h.set_sensor_dll_path_x64(&x64);
+        msg.push_str(&format!(" | sensor-x64: {x64}"));
+    } else {
+        msg.push_str(" | sensor-x64: NOT FOUND");
+    }
+    if let Some(x86) = find_dll(&["PeregrineSensor_x86.dll"]) {
+        let _ = h.set_sensor_dll_path_x86(&x86);
+        msg.push_str(&format!(" | sensor-x86: {x86}"));
+    } else {
+        msg.push_str(" | sensor-x86: NOT FOUND");
     }
 
     Ok(msg)
@@ -100,7 +115,15 @@ fn add_injection_target(name: String) -> Result<String, String> {
     let h = DriverHandle::open()?;
     h.add_injection_target(&name)?;
     h.set_injection_enabled(true)?;
-    Ok(format!("target '{}' added, injection enabled", name))
+    Ok(format!("Game target '{}' added, injection enabled", name))
+}
+
+#[tauri::command]
+fn add_sensor_injection_target(name: String) -> Result<String, String> {
+    let h = DriverHandle::open()?;
+    h.add_sensor_injection_target(&name)?;
+    h.set_injection_enabled(true)?;
+    Ok(format!("Sensor target '{}' added, injection enabled", name))
 }
 
 #[tauri::command]
@@ -255,6 +278,7 @@ pub fn run() {
             scan_ob_callbacks,
             system_check,
             add_injection_target,
+            add_sensor_injection_target,
             clear_injection_targets,
             start_etw_ti,
             check_modules,

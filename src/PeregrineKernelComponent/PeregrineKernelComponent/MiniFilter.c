@@ -64,6 +64,10 @@ static BOOLEAN IsProtectedFile(_In_ PCUNICODE_STRING Path)
     /* Real install names from build_dll.bat / Userland deploy */
     if (EndsWithI(Path, L"peregrinedll_x64.dll", 20)) return TRUE;
     if (EndsWithI(Path, L"peregrinedll_x86.dll", 20)) return TRUE;
+    if (EndsWithI(Path, L"peregrinegame_x64.dll", 21)) return TRUE;
+    if (EndsWithI(Path, L"peregrinegame_x86.dll", 21)) return TRUE;
+    if (EndsWithI(Path, L"peregrinesensor_x64.dll", 23)) return TRUE;
+    if (EndsWithI(Path, L"peregrinesensor_x86.dll", 23)) return TRUE;
     /* Legacy / alternate names still used by connect_driver search */
     if (EndsWithI(Path, L"peregrine64.dll", 15)) return TRUE;
     if (EndsWithI(Path, L"peregrine32.dll", 15)) return TRUE;

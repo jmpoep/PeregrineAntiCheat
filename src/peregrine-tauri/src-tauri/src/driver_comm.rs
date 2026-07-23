@@ -59,6 +59,9 @@ pub enum DriverEvent {
         status: String,
         #[serde(default)]
         error: Option<String>,
+        /// "game" | "sensor" (kernel dual-DLL inject)
+        #[serde(default)]
+        role: Option<String>,
     },
     #[serde(rename = "driver_scan")]
     DriverScan {
@@ -196,6 +199,7 @@ impl DriverHandle {
         self.send_command(&[7])
     }
 
+    /// Game role x64 DLL path (IOCTL 8).
     pub fn set_dll_path_x64(&self, path: &str) -> Result<(), String> {
         let wide: Vec<u8> = path
             .encode_utf16()
@@ -206,6 +210,7 @@ impl DriverHandle {
         self.send_command(&buf)
     }
 
+    /// Game role x86 DLL path (IOCTL 9).
     pub fn set_dll_path_x86(&self, path: &str) -> Result<(), String> {
         let wide: Vec<u8> = path
             .encode_utf16()
@@ -216,6 +221,7 @@ impl DriverHandle {
         self.send_command(&buf)
     }
 
+    /// Add Game inject target basename (IOCTL 10).
     pub fn add_injection_target(&self, name: &str) -> Result<(), String> {
         let mut buf = vec![10u8];
         buf.extend_from_slice(name.as_bytes());
@@ -224,6 +230,35 @@ impl DriverHandle {
 
     pub fn set_injection_enabled(&self, enabled: bool) -> Result<(), String> {
         self.send_command(&[11, if enabled { 1 } else { 0 }])
+    }
+
+    /// Sensor role x64 DLL path (IOCTL 15).
+    pub fn set_sensor_dll_path_x64(&self, path: &str) -> Result<(), String> {
+        let wide: Vec<u8> = path
+            .encode_utf16()
+            .flat_map(|c| c.to_le_bytes())
+            .collect();
+        let mut buf = vec![15u8];
+        buf.extend_from_slice(&wide);
+        self.send_command(&buf)
+    }
+
+    /// Sensor role x86 DLL path (IOCTL 16).
+    pub fn set_sensor_dll_path_x86(&self, path: &str) -> Result<(), String> {
+        let wide: Vec<u8> = path
+            .encode_utf16()
+            .flat_map(|c| c.to_le_bytes())
+            .collect();
+        let mut buf = vec![16u8];
+        buf.extend_from_slice(&wide);
+        self.send_command(&buf)
+    }
+
+    /// Add Sensor inject target basename (IOCTL 17).
+    pub fn add_sensor_injection_target(&self, name: &str) -> Result<(), String> {
+        let mut buf = vec![17u8];
+        buf.extend_from_slice(name.as_bytes());
+        self.send_command(&buf)
     }
 
     pub fn collect_hwid(&self) -> Result<(), String> {
