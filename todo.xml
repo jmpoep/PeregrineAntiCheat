@@ -1,0 +1,233 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Peregrine — Injection migration worklist
+
+  Goal: Replace Peregrine kernel APC shellcode (LdrLoadDll) with the OpenEDR-style
+  approach: user-mode APC whose NormalRoutine is kernel32!LoadLibraryExW and
+  NormalContext is a wide path string (RW only, no private RX shellcode).
+
+  Reference (OpenEDR / ComodoSecurity/openedr):
+    edrav2/iprj/edrdrv/src/dllinj.cpp
+    edrav2/iprj/edrdrv/src/kernelinjectlib/injectengine/apcinjector.cpp
+    edrav2/iprj/edrdrv/src/kernelinjectlib/injectengine/apcqueue.cpp
+    edrav2/iprj/edrdrv/src/kernelinjectlib/injectengine/injector.cpp
+    edrav2/iprj/edrdrv/src/kernelinjectlib/kernelinjectlib.hpp
+
+  Policy:
+    - Directly copying / adapting OpenEDR injection mechanics is OK (educational project;
+      credit OpenEDR in comments / README where substantial code is ported).
+    - Keep Peregrine product semantics: inject only named targets, StateAddPid on success,
+      x64 + WoW64 paths, IOCTL config, VM-only verification.
+    - No hacks. Prefer a clean design over partial shellcode leftovers.
+    - Status: todo | in_progress | done | blocked
+
+  Environments:
+    DEV  = edit/build only
+    VM   = deploy .sys/DLL/GUI, load driver, run game + cheats — only place to mark done
+-->
+<todo>
+  <feature name="openedr-style-apc-injection" priority="high">
+    <title>Kernel DLL injection: migrate to OpenEDR LoadLibraryExW APC (no shellcode)</title>
+    <description>
+      OpenEDR queues a user-mode APC with:
+        NormalRoutine = kernel32!LoadLibraryExW
+        NormalContext = LPWSTR dll path in target (PAGE_READWRITE only)
+        SystemArgument1 = NULL (hFile)
+        SystemArgument2 = LOAD_IGNORE_CODE_AUTHZ_LEVEL | LOAD_LIBRARY_SEARCH_SYSTEM32
+      (or equivalent flags; verify on target Windows builds)
+
+      Peregrine currently:
+        allocates shellcode + UNICODE_STRING + path
+        protects shellcode RX
+        NormalRoutine = shellcode calling ntdll!LdrLoadDll
+        leaves staging until process exit (VAD self-noise)
+
+      Target end state:
+        same OpenEDR APC shape; no executable staging; free path buffer ASAP
+        (process exit minimum; better: after DLL mapped if safe)
+        retain target allowlist + auto StateAddPid + x86/x64 DLL paths
+    </description>
+
+    <task id="1" status="todo">
+      <title>Port / implement OpenEDR APC queue helpers</title>
+      <description>
+        Adapt OpenEDR apcqueue (KeInitializeApc / KeInsertQueueApc / KernelRoutine frees KAPC,
+        RundownRoutine) into Peregrine style (C, existing pool tags, no C++ required unless we
+        choose to keep C).
+
+        Requirements:
+        - UserMode APC, OriginalApcEnvironment
+        - NormalRoutine = resolved LoadLibraryExW address (not shellcode)
+        - NormalContext = pointer to wide path in target process
+        - insert(SystemArgument1=NULL, SystemArgument2=flags)
+        - WoW64: PsWrapApcWow64Thread on context + routine before KeInitializeApc / insert
+          (mirror OpenEDR apcinjector doInject Wow64 branch)
+
+        License/credit: header comment pointing at OpenEDR injectengine sources is fine.
+      </description>
+      <files>
+        <file>src/PeregrineKernelComponent/PeregrineKernelComponent/ApcInjection.c</file>
+        <file>src/PeregrineKernelComponent/PeregrineKernelComponent/ApcInjection.h</file>
+        <!-- optional split if file grows: ApcQueue.c/h -->
+      </files>
+    </task>
+
+    <task id="2" status="todo">
+      <title>Resolve LoadLibraryExW per target process (kernel32 map)</title>
+      <description>
+        OpenEDR tracks per-PID bases of ntdll/kernel32/user32 on LoadImageNotify, then
+        getProcAddress(kernel32, "LoadLibraryExW").
+
+        Minimum viable for Peregrine:
+        - On image load of kernel32.dll (native System32 vs SysWOW64), parse exports of
+          that image base in the attached/current process context and resolve LoadLibraryExW.
+        - Prefer per-PID resolution at inject time (ASLR-safe) over a single global cache,
+          or cache per pending PID once kernel32 is seen.
+
+        Can port OpenEDR petools getProcAddress logic, or reuse/extend Peregrine ParseExports
+        currently used for LdrLoadDll.
+
+        Trigger remains: kernel32 load + PID on pending injection list (keep AC target model).
+      </description>
+    </task>
+
+    <task id="3" status="todo">
+      <title>Replace DoInjectInContext: path-only alloc + LoadLibraryExW APC</title>
+      <description>
+        Remove:
+        - g_ShellcodeX64 / g_ShellcodeX86 and patch offsets
+        - UNICODE_STRING build for LdrLoadDll
+        - ZwProtectVirtualMemory to PAGE_EXECUTE_READ for inject stub
+
+        New DoInject (or rewrite of DoInjectInContext):
+        1. Choose x64 vs x86 DLL path from g_Inj (existing)
+        2. ZwAllocateVirtualMemory(PAGE_READWRITE) sized for path + null only
+        3. Copy wide path into allocation
+        4. Resolve LoadLibraryExW (task 2)
+        5. Queue APC: NormalRoutine=LoadLibraryExW, Context=path, flags in SystemArg2
+        6. Optional: KeTestAlertThread(UserMode) — keep if still needed for reliable delivery
+        7. Track allocation for free (task 5)
+        8. On success: StateAddPid(ProcessId) (keep)
+
+        DLL path note: OpenEDR often injects by filename under System32 search flags.
+        Peregrine uses full paths under C:\Peregrine\ — verify LoadLibraryExW flags:
+        - Prefer full path + flags that do not break loading from outside System32
+        - LOAD_LIBRARY_SEARCH_SYSTEM32 alone may be wrong for C:\Peregrine\*.dll
+        - Use full absolute path; set flags carefully (possibly 0, or
+          LOAD_WITH_ALTERED_SEARCH_PATH / documented safe flags for absolute paths).
+        Document chosen flags in code comments after VM verification.
+      </description>
+    </task>
+
+    <task id="4" status="todo">
+      <title>Wire notify path; remove dead LdrLoadDll ntdll export dependency for inject</title>
+      <description>
+        InjOnImageLoad:
+        - Keep pending match + kernel32 trigger
+        - Call new inject path instead of shellcode DoInjectInContext
+        - ntdll base caching only needed if still used elsewhere; if only for LdrLoadDll,
+          drop or narrow it
+
+        InjOnProcessCreate / InjOnProcessExit:
+        - Keep target matching, pending list, StateRemovePid, free staging
+
+        InjOnThreadCreate:
+        - Still stub unless we later port OpenEDR first-thread / retry logic (optional follow-up)
+
+        Process filter (optional, recommended):
+        - Skip PP/PPL processes like OpenEDR isAllowDllInjection — if inject would fail or
+          is undesirable.
+      </description>
+    </task>
+
+    <task id="5" status="todo">
+      <title>Memory free: path buffer only, sooner if safe</title>
+      <description>
+        OpenEDR frees user path memory on process terminate (and has freelist on thread exit).
+
+        Peregrine:
+        - Reuse/simplify PendingFree* for path-only allocations (no RX region)
+        - Minimum: free on process exit (InjOnProcessExit) — already have pattern
+        - Better: free after our DLL image maps — only if LoadLibraryExW has finished and
+          no longer needs the path buffer. OpenEDR intentionally delays free; if unsure,
+          free on exit only (still huge win vs RX shellcode page).
+
+        Do not free while Ldr/LoadLibrary still holds a pointer to the path.
+      </description>
+    </task>
+
+    <task id="6" status="todo">
+      <title>IOCTL / config surface stays compatible</title>
+      <description>
+        Keep existing commands:
+        - set x64/x86 DLL path (8/9)
+        - add injection target (10)
+        - enable/disable (11)
+        - clear targets (14)
+
+        No userland API break required if paths remain full paths to PeregrineDLL_*.dll.
+        Update any comments in Coms.c / driver_comm.rs that mention shellcode or LdrLoadDll.
+      </description>
+    </task>
+
+    <task id="7" status="todo">
+      <title>README + code comments: document OpenEDR-style injection</title>
+      <description>
+        Update README "Kernel APC DLL Injection" section:
+        - LoadLibraryExW APC, RW path only, no shellcode
+        - credit OpenEDR approach / sources
+        - note VM deploy / target allowlist / StateAddPid still apply
+
+        In ApcInjection.c header: short design note + reference URLs/paths to OpenEDR files.
+      </description>
+    </task>
+
+    <task id="8" status="todo">
+      <title>VM verification matrix</title>
+      <description>
+        Deploy matching sys + DLLs + GUI to C:\Peregrine\ on test VM only.
+
+        Cases:
+        1. x64 game.exe as injection target → apc_inject success, DLL hello over pipe
+        2. ObCallback / protect works without manual add_pid (StateAddPid still on success)
+        3. VAD scan on injected game: no private RX shellcode region from Peregrine
+        4. External cheat (cheat.exe) still detected via hooks/ETW/ObCallback as before
+        5. If x86 target exists: WoW64 path + PeregrineDLL_x86.dll
+        6. clear targets (IOCTL 14) → no inject on next launch
+        7. Wrong/missing DLL path → clean failure event, no BSOD
+        8. Process exit → no leak of pending free / protected PID list grows unbounded
+
+        Only after VM pass: mark feature tasks done.
+      </description>
+    </task>
+
+    <task id="9" status="todo" optional="true">
+      <title>Optional follow-ups (not required for migration done)</title>
+      <description>
+        - Port OpenEDR-style per-process image map (ntdll/kernel32/user32) more fully
+        - Authenticode check of inject DLL before queue (OpenEDR enableDllVerification)
+        - Second injector backend (IAT) — only if needed later
+        - First-thread / delayed inject retry if kernel32 path races
+        - Multi-DLL list like OpenEDR (Peregrine currently one path per arch)
+      </description>
+    </task>
+  </feature>
+
+  <workflow>
+    <recommended_order>
+      1 → 2 → 3 → 4 → 5 → 6 → 7 → 8   (9 anytime later)
+    </recommended_order>
+    <rules>
+      <rule>Copying OpenEDR injection mechanics is allowed; strip unused madCHook / IAT paths unless we explicitly want them.</rule>
+      <rule>Do not leave dual inject paths half-wired (shellcode + LoadLibraryExW) in production path — one primary path.</rule>
+      <rule>Full absolute DLL path under C:\Peregrine must keep working; re-verify LoadLibraryExW flags on VM.</rule>
+      <rule>Never load experimental .sys on the DEV machine that holds the repo; verify on the dedicated Windows VM.</rule>
+      <rule>No hacks: if LoadLibraryExW flags break non-System32 paths, fix flags/path design properly.</rule>
+      <rule>Mark done only after VM verification (task 8).</rule>
+    </rules>
+    <build>
+      <item>DEV: rebuild PeregrineKernelComponent.sys</item>
+      <item>VM: sc stop, replace sys, sc start, elevated GUI, inject target = game.exe</item>
+    </build>
+  </workflow>
+</todo>
